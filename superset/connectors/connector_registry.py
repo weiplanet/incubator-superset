@@ -14,16 +14,18 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-from collections import OrderedDict
 from typing import Dict, List, Optional, Set, Type, TYPE_CHECKING
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, subqueryload
 
+from superset.datasets.commands.exceptions import DatasetNotFoundError
+
 if TYPE_CHECKING:
-    # pylint: disable=unused-import
-    from superset.models.core import Database
+    from collections import OrderedDict
+
     from superset.connectors.base.models import BaseDatasource
+    from superset.models.core import Database
 
 
 class ConnectorRegistry:
@@ -32,7 +34,7 @@ class ConnectorRegistry:
     sources: Dict[str, Type["BaseDatasource"]] = {}
 
     @classmethod
-    def register_sources(cls, datasource_config: OrderedDict) -> None:
+    def register_sources(cls, datasource_config: "OrderedDict[str, List[str]]") -> None:
         for module_name, class_names in datasource_config.items():
             class_names = [str(s) for s in class_names]
             module_obj = __import__(module_name, fromlist=class_names)
@@ -44,11 +46,22 @@ class ConnectorRegistry:
     def get_datasource(
         cls, datasource_type: str, datasource_id: int, session: Session
     ) -> "BaseDatasource":
-        return (
+        """Safely get a datasource instance, raises `DatasetNotFoundError` if
+        `datasource_type` is not registered or `datasource_id` does not
+        exist."""
+        if datasource_type not in cls.sources:
+            raise DatasetNotFoundError()
+
+        datasource = (
             session.query(cls.sources[datasource_type])
             .filter_by(id=datasource_id)
-            .one()
+            .one_or_none()
         )
+
+        if not datasource:
+            raise DatasetNotFoundError()
+
+        return datasource
 
     @classmethod
     def get_all_datasources(cls, session: Session) -> List["BaseDatasource"]:

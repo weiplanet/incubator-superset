@@ -18,12 +18,11 @@
  */
 import React from 'react';
 import { shallow } from 'enzyme';
-import { getChartControlPanelRegistry } from '@superset-ui/chart';
-import { t } from '@superset-ui/translation';
+import { getChartControlPanelRegistry, t } from '@superset-ui/core';
 import { defaultControls } from 'src/explore/store';
 import { getFormDataFromControls } from 'src/explore/controlUtils';
 import { ControlPanelsContainer } from 'src/explore/components/ControlPanelsContainer';
-import ControlPanelSection from 'src/explore/components/ControlPanelSection';
+import Collapse from 'src/common/components/Collapse';
 
 describe('ControlPanelsContainer', () => {
   let wrapper;
@@ -92,6 +91,6 @@ describe('ControlPanelsContainer', () => {
 
   it('renders ControlPanelSections', () => {
     wrapper = shallow(<ControlPanelsContainer {...getDefaultProps()} />);
-    expect(wrapper.find(ControlPanelSection)).toHaveLength(6);
+    expect(wrapper.find(Collapse.Panel)).toHaveLength(5);
   });
 });

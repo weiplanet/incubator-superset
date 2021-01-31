@@ -18,7 +18,7 @@
  */
 import React from 'react';
 import PropTypes from 'prop-types';
-import { t } from '@superset-ui/translation';
+import { t } from '@superset-ui/core';
 
 import URLShortLinkButton from './URLShortLinkButton';
 import getDashboardUrl from '../dashboard/util/getDashboardUrl';
@@ -85,7 +85,7 @@ class AnchorLink extends React.PureComponent {
               filters,
               anchorLinkId,
             )}
-            emailSubject={t('Superset Chart')}
+            emailSubject={t('Superset chart')}
             emailContent={t('Check out this chart in dashboard:')}
             placement={placement}
           />

@@ -16,39 +16,87 @@
 # under the License.
 # isort:skip_file
 """Unit tests for Superset"""
-import copy
+from datetime import datetime
 import json
 import unittest
 from random import random
+from tests.fixtures.birth_names_dashboard import load_birth_names_dashboard_with_slices
 
-from flask import escape
+import pytest
+from flask import escape, url_for
 from sqlalchemy import func
-from typing import Dict
 
-import tests.test_app
+from tests.fixtures.unicode_dashboard import load_unicode_dashboard_with_position
+from tests.test_app import app
 from superset import db, security_manager
 from superset.connectors.sqla.models import SqlaTable
 from superset.models import core as models
 from superset.models.dashboard import Dashboard
 from superset.models.slice import Slice
-from superset.views import core as views
+from tests.fixtures.energy_dashboard import load_energy_table_with_slice
+from tests.fixtures.world_bank_dashboard import load_world_bank_dashboard_with_slices
 
 from .base_tests import SupersetTestCase
 
 
-class DashboardTests(SupersetTestCase):
-    def __init__(self, *args, **kwargs):
-        super(DashboardTests, self).__init__(*args, **kwargs)
+class TestDashboard(SupersetTestCase):
+    @pytest.fixture
+    def cleanup_copied_dash(self):
+        with app.app_context():
+            original_dashboard = (
+                db.session.query(Dashboard).filter_by(slug="births").first()
+            )
+            original_dashboard_id = original_dashboard.id
+            yield
+            copied_dashboard = (
+                db.session.query(Dashboard)
+                .filter(
+                    Dashboard.dashboard_title == "Copy Of Births",
+                    Dashboard.id != original_dashboard_id,
+                )
+                .first()
+            )
 
-    @classmethod
-    def setUpClass(cls):
-        pass
+            db.session.merge(original_dashboard)
+            if copied_dashboard:
+                db.session.delete(copied_dashboard)
+            db.session.commit()
 
-    def setUp(self):
-        pass
+    @pytest.fixture
+    def load_dashboard(self):
+        with app.app_context():
+            table = (
+                db.session.query(SqlaTable).filter_by(table_name="energy_usage").one()
+            )
+            # get a slice from the allowed table
+            slice = db.session.query(Slice).filter_by(slice_name="Energy Sankey").one()
 
-    def tearDown(self):
-        pass
+            self.grant_public_access_to_table(table)
+
+            pytest.hidden_dash_slug = f"hidden_dash_{random()}"
+            pytest.published_dash_slug = f"published_dash_{random()}"
+
+            # Create a published and hidden dashboard and add them to the database
+            published_dash = Dashboard()
+            published_dash.dashboard_title = "Published Dashboard"
+            published_dash.slug = pytest.published_dash_slug
+            published_dash.slices = [slice]
+            published_dash.published = True
+
+            hidden_dash = Dashboard()
+            hidden_dash.dashboard_title = "Hidden Dashboard"
+            hidden_dash.slug = pytest.hidden_dash_slug
+            hidden_dash.slices = [slice]
+            hidden_dash.published = False
+
+            db.session.merge(published_dash)
+            db.session.merge(hidden_dash)
+            yield db.session.commit()
+
+            self.revoke_public_access_to_table(table)
+            db.session.delete(published_dash)
+            db.session.delete(hidden_dash)
+            db.session.commit()
 
     def get_mock_positions(self, dash):
         positions = {"DASHBOARD_VERSION_KEY": "v2"}
@@ -71,6 +119,9 @@ class DashboardTests(SupersetTestCase):
         for title, url in urls.items():
             assert escape(title) in self.client.get(url).data.decode("utf-8")
 
+    def test_superset_dashboard_url(self):
+        url_for("Superset.dashboard", dashboard_id_or_slug=1)
+
     def test_new_dashboard(self):
         self.login(username="admin")
         dash_count_before = db.session.query(func.count(Dashboard.id)).first()[0]
@@ -80,6 +131,7 @@ class DashboardTests(SupersetTestCase):
         dash_count_after = db.session.query(func.count(Dashboard.id)).first()[0]
         self.assertEqual(dash_count_before + 1, dash_count_after)
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_dashboard_modes(self):
         self.login(username="admin")
         dash = db.session.query(Dashboard).filter_by(slug="births").first()
@@ -93,6 +145,7 @@ class DashboardTests(SupersetTestCase):
         self.assertIn("standalone_mode&#34;: true", resp)
         self.assertIn('<body class="standalone">', resp)
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_save_dash(self, username="admin"):
         self.login(username=username)
         dash = db.session.query(Dashboard).filter_by(slug="births").first()
@@ -102,11 +155,14 @@ class DashboardTests(SupersetTestCase):
             "expanded_slices": {},
             "positions": positions,
             "dashboard_title": dash.dashboard_title,
+            # set a further modified_time for unit test
+            "last_modified_time": datetime.now().timestamp() + 1000,
         }
         url = "/superset/save_dash/{}/".format(dash.id)
         resp = self.get_resp(url, data=dict(data=json.dumps(data)))
         self.assertIn("SUCCESS", resp)
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices")
     def test_save_dash_with_filter(self, username="admin"):
         self.login(username=username)
         dash = db.session.query(Dashboard).filter_by(slug="world_health").first()
@@ -120,6 +176,8 @@ class DashboardTests(SupersetTestCase):
             "positions": positions,
             "dashboard_title": dash.dashboard_title,
             "default_filters": default_filters,
+            # set a further modified_time for unit test
+            "last_modified_time": datetime.now().timestamp() + 1000,
         }
 
         url = "/superset/save_dash/{}/".format(dash.id)
@@ -128,11 +186,13 @@ class DashboardTests(SupersetTestCase):
 
         updatedDash = db.session.query(Dashboard).filter_by(slug="world_health").first()
         new_url = updatedDash.url
-        self.assertIn("region", new_url)
+        self.assertIn("world_health", new_url)
+        self.assertNotIn("preselect_filters", new_url)
 
         resp = self.get_resp(new_url)
         self.assertIn("North America", resp)
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices")
     def test_save_dash_with_invalid_filters(self, username="admin"):
         self.login(username=username)
         dash = db.session.query(Dashboard).filter_by(slug="world_health").first()
@@ -147,6 +207,8 @@ class DashboardTests(SupersetTestCase):
             "positions": positions,
             "dashboard_title": dash.dashboard_title,
             "default_filters": default_filters,
+            # set a further modified_time for unit test
+            "last_modified_time": datetime.now().timestamp() + 1000,
         }
 
         url = "/superset/save_dash/{}/".format(dash.id)
@@ -157,6 +219,7 @@ class DashboardTests(SupersetTestCase):
         new_url = updatedDash.url
         self.assertNotIn("region", new_url)
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_save_dash_with_dashboard_title(self, username="admin"):
         self.login(username=username)
         dash = db.session.query(Dashboard).filter_by(slug="births").first()
@@ -167,6 +230,8 @@ class DashboardTests(SupersetTestCase):
             "expanded_slices": {},
             "positions": positions,
             "dashboard_title": "new title",
+            # set a further modified_time for unit test
+            "last_modified_time": datetime.now().timestamp() + 1000,
         }
         url = "/superset/save_dash/{}/".format(dash.id)
         self.get_resp(url, data=dict(data=json.dumps(data)))
@@ -176,6 +241,7 @@ class DashboardTests(SupersetTestCase):
         data["dashboard_title"] = origin_title
         self.get_resp(url, data=dict(data=json.dumps(data)))
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_save_dash_with_colors(self, username="admin"):
         self.login(username=username)
         dash = db.session.query(Dashboard).filter_by(slug="births").first()
@@ -189,6 +255,8 @@ class DashboardTests(SupersetTestCase):
             "color_namespace": "Color Namespace Test",
             "color_scheme": "Color Scheme Test",
             "label_colors": new_label_colors,
+            # set a further modified_time for unit test
+            "last_modified_time": datetime.now().timestamp() + 1000,
         }
         url = "/superset/save_dash/{}/".format(dash.id)
         self.get_resp(url, data=dict(data=json.dumps(data)))
@@ -202,6 +270,11 @@ class DashboardTests(SupersetTestCase):
         del data["label_colors"]
         self.get_resp(url, data=dict(data=json.dumps(data)))
 
+    @pytest.mark.usefixtures(
+        "load_birth_names_dashboard_with_slices",
+        "cleanup_copied_dash",
+        "load_unicode_dashboard_with_position",
+    )
     def test_copy_dash(self, username="admin"):
         self.login(username=username)
         dash = db.session.query(Dashboard).filter_by(slug="births").first()
@@ -216,6 +289,8 @@ class DashboardTests(SupersetTestCase):
             "color_namespace": "Color Namespace Test",
             "color_scheme": "Color Scheme Test",
             "label_colors": new_label_colors,
+            # set a further modified_time for unit test
+            "last_modified_time": datetime.now().timestamp() + 1000,
         }
 
         # Save changes to Births dashboard and retrieve updated dash
@@ -235,60 +310,12 @@ class DashboardTests(SupersetTestCase):
         # exclude modified and changed_on attribute
         for index, slc in enumerate(orig_json_data["slices"]):
             for key in slc:
-                if key not in ["modified", "changed_on"]:
+                if key not in ["modified", "changed_on", "changed_on_humanized"]:
                     self.assertEqual(slc[key], resp["slices"][index][key])
 
-    def test_set_dash_metadata(self, username="admin"):
-        self.login(username=username)
-        dash = db.session.query(Dashboard).filter_by(slug="world_health").first()
-        data = dash.data
-        positions = data["position_json"]
-        data.update({"positions": positions})
-        original_data = copy.deepcopy(data)
-
-        # add filter scopes
-        filter_slice = dash.slices[0]
-        immune_slices = dash.slices[2:]
-        filter_scopes = {
-            str(filter_slice.id): {
-                "region": {
-                    "scope": ["ROOT_ID"],
-                    "immune": [slc.id for slc in immune_slices],
-                }
-            }
-        }
-        data.update({"filter_scopes": json.dumps(filter_scopes)})
-        views.Superset._set_dash_metadata(dash, data)
-        updated_metadata = json.loads(dash.json_metadata)
-        self.assertEqual(updated_metadata["filter_scopes"], filter_scopes)
-
-        # remove a slice and change slice ids (as copy slices)
-        removed_slice = immune_slices.pop()
-        removed_component = [
-            key
-            for (key, value) in positions.items()
-            if isinstance(value, dict)
-            and value.get("type") == "CHART"
-            and value["meta"]["chartId"] == removed_slice.id
-        ]
-        positions.pop(removed_component[0], None)
-
-        data.update({"positions": positions})
-        views.Superset._set_dash_metadata(dash, data)
-        updated_metadata = json.loads(dash.json_metadata)
-        expected_filter_scopes = {
-            str(filter_slice.id): {
-                "region": {
-                    "scope": ["ROOT_ID"],
-                    "immune": [slc.id for slc in immune_slices],
-                }
-            }
-        }
-        self.assertEqual(updated_metadata["filter_scopes"], expected_filter_scopes)
-
-        # reset dash to original data
-        views.Superset._set_dash_metadata(dash, original_data)
-
+    @pytest.mark.usefixtures(
+        "load_energy_table_with_slice", "load_birth_names_dashboard_with_slices"
+    )
     def test_add_slices(self, username="admin"):
         self.login(username=username)
         dash = db.session.query(Dashboard).filter_by(slug="births").first()
@@ -317,6 +344,7 @@ class DashboardTests(SupersetTestCase):
         dash.slices = [o for o in dash.slices if o.slice_name != "Energy Force Layout"]
         db.session.commit()
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_remove_slices(self, username="admin"):
         self.login(username=username)
         dash = db.session.query(Dashboard).filter_by(slug="births").first()
@@ -335,6 +363,8 @@ class DashboardTests(SupersetTestCase):
             "expanded_slices": {},
             "positions": positions,
             "dashboard_title": dash.dashboard_title,
+            # set a further modified_time for unit test
+            "last_modified_time": datetime.now().timestamp() + 1000,
         }
 
         # save dash
@@ -347,6 +377,7 @@ class DashboardTests(SupersetTestCase):
         data = dash.data
         self.assertEqual(len(data["slices"]), origin_slices_length - 1)
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_public_user_dashboard_access(self):
         table = db.session.query(SqlaTable).filter_by(table_name="birth_names").one()
 
@@ -384,6 +415,10 @@ class DashboardTests(SupersetTestCase):
         resp = self.get_resp("/api/v1/dashboard/")
         self.assertNotIn("/superset/dashboard/world_health/", resp)
 
+        # Cleanup
+        self.revoke_public_access_to_table(table)
+
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_dashboard_with_created_by_can_be_accessed_by_public_users(self):
         self.logout()
         table = db.session.query(SqlaTable).filter_by(table_name="birth_names").one()
@@ -396,7 +431,10 @@ class DashboardTests(SupersetTestCase):
         db.session.commit()
 
         assert "Births" in self.get_resp("/superset/dashboard/births/")
+        # Cleanup
+        self.revoke_public_access_to_table(table)
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_only_owners_can_save(self):
         dash = db.session.query(Dashboard).filter_by(slug="births").first()
         dash.owners = []
@@ -433,36 +471,11 @@ class DashboardTests(SupersetTestCase):
         resp = self.get_resp("/api/v1/dashboard/")
         self.assertNotIn("/superset/dashboard/empty_dashboard/", resp)
 
+    @pytest.mark.usefixtures("load_energy_table_with_slice", "load_dashboard")
     def test_users_can_view_published_dashboard(self):
-        table = db.session.query(SqlaTable).filter_by(table_name="energy_usage").one()
-        # get a slice from the allowed table
-        slice = db.session.query(Slice).filter_by(slice_name="Energy Sankey").one()
-
-        self.grant_public_access_to_table(table)
-
-        hidden_dash_slug = f"hidden_dash_{random()}"
-        published_dash_slug = f"published_dash_{random()}"
-
-        # Create a published and hidden dashboard and add them to the database
-        published_dash = Dashboard()
-        published_dash.dashboard_title = "Published Dashboard"
-        published_dash.slug = published_dash_slug
-        published_dash.slices = [slice]
-        published_dash.published = True
-
-        hidden_dash = Dashboard()
-        hidden_dash.dashboard_title = "Hidden Dashboard"
-        hidden_dash.slug = hidden_dash_slug
-        hidden_dash.slices = [slice]
-        hidden_dash.published = False
-
-        db.session.merge(published_dash)
-        db.session.merge(hidden_dash)
-        db.session.commit()
-
         resp = self.get_resp("/api/v1/dashboard/")
-        self.assertNotIn(f"/superset/dashboard/{hidden_dash_slug}/", resp)
-        self.assertIn(f"/superset/dashboard/{published_dash_slug}/", resp)
+        self.assertNotIn(f"/superset/dashboard/{pytest.hidden_dash_slug}/", resp)
+        self.assertIn(f"/superset/dashboard/{pytest.published_dash_slug}/", resp)
 
     def test_users_can_view_own_dashboard(self):
         user = security_manager.find_user("gamma")

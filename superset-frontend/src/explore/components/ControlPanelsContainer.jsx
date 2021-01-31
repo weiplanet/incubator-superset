@@ -21,17 +21,18 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import { bindActionCreators } from 'redux';
 import { connect } from 'react-redux';
-import { Alert, Tab, Tabs } from 'react-bootstrap';
-import { isPlainObject } from 'lodash';
-import { t } from '@superset-ui/translation';
-import { getChartControlPanelRegistry } from '@superset-ui/chart';
+import { Alert } from 'react-bootstrap';
+import { t, styled, getChartControlPanelRegistry } from '@superset-ui/core';
 
-import ControlPanelSection from './ControlPanelSection';
+import Tabs from 'src/common/components/Tabs';
+import { Collapse } from 'src/common/components';
+import { PluginContext } from 'src/components/DynamicPlugins';
+import Loading from 'src/components/Loading';
+import { InfoTooltipWithTrigger } from '@superset-ui/chart-controls';
 import ControlRow from './ControlRow';
 import Control from './Control';
-import controlConfigs from '../controls';
 import { sectionsToRender } from '../controlUtils';
-import * as exploreActions from '../actions/exploreActions';
+import { exploreActions } from '../actions/exploreActions';
 
 const propTypes = {
   actions: PropTypes.object.isRequired,
@@ -43,44 +44,52 @@ const propTypes = {
   isDatasourceMetaLoading: PropTypes.bool.isRequired,
 };
 
+const Styles = styled.div`
+  height: 100%;
+  width: 100%;
+  overflow: auto;
+  overflow-x: visible;
+  overflow-y: auto;
+  .remove-alert {
+    cursor: pointer;
+  }
+  #controlSections {
+    min-height: 100%;
+    overflow: visible;
+  }
+  .nav-tabs {
+    flex: 0 0 1;
+  }
+  .tab-content {
+    overflow: auto;
+    flex: 1 1 100%;
+  }
+  .Select__menu {
+    max-width: 100%;
+  }
+`;
+
+const ControlPanelsTabs = styled(Tabs)`
+  .ant-tabs-nav-list {
+    width: ${({ fullWidth }) => (fullWidth ? '100%' : '50%')};
+  }
+  .ant-tabs-content-holder {
+    overflow: visible;
+  }
+  .ant-tabs-tabpane {
+    height: 100%;
+  }
+`;
 class ControlPanelsContainer extends React.Component {
+  // trigger updates to the component when async plugins load
+  static contextType = PluginContext;
+
   constructor(props) {
     super(props);
 
-    this.getControlData = this.getControlData.bind(this);
     this.removeAlert = this.removeAlert.bind(this);
     this.renderControl = this.renderControl.bind(this);
     this.renderControlPanelSection = this.renderControlPanelSection.bind(this);
-  }
-
-  getControlData(controlName) {
-    if (React.isValidElement(controlName)) {
-      return controlName;
-    }
-
-    const control = this.props.controls[controlName];
-    // Identifying mapStateToProps function to apply (logic can't be in store)
-    let mapF = controlConfigs[controlName].mapStateToProps;
-
-    // Looking to find mapStateToProps override for this viz type
-    const controlPanelConfig =
-      getChartControlPanelRegistry().get(this.props.controls.viz_type.value) ||
-      {};
-    const controlOverrides = controlPanelConfig.controlOverrides || {};
-    if (
-      controlOverrides[controlName] &&
-      controlOverrides[controlName].mapStateToProps
-    ) {
-      mapF = controlOverrides[controlName].mapStateToProps;
-    }
-    // Applying mapStateToProps if needed
-    if (mapF) {
-      return {
-        ...control,
-        ...mapF(this.props.exploreState, control, this.props.actions),
-      };
-    }
-    return control;
   }
 
   sectionsToRender() {
@@ -90,58 +99,55 @@ class ControlPanelsContainer extends React.Component {
     );
   }
 
+  sectionsToExpand(sections) {
+    return sections.reduce(
+      (acc, cur) => (cur.expanded ? [...acc, cur.label] : acc),
+      [],
+    );
+  }
+
   removeAlert() {
     this.props.actions.removeControlPanelAlert();
   }
 
-  renderControl(name, config, lookupControlData) {
-    const { actions, controls, exploreState, form_data: formData } = this.props;
+  renderControl({ name, config }) {
+    const { actions, controls, form_data: formData } = this.props;
     const { visibility } = config;
-
-    // if visibility check says the config is not visible, don't render it
-    if (visibility && !visibility.call(config, this.props)) {
-      return null;
-    }
-
-    // Looking to find mapStateToProps override for this viz type
-    const controlPanelConfig =
-      getChartControlPanelRegistry().get(controls.viz_type.value) || {};
-    const controlOverrides = controlPanelConfig.controlOverrides || {};
-    const overrides = controlOverrides[name];
-
-    // Identifying mapStateToProps function to apply (logic can't be in store)
-    const mapFn =
-      overrides && overrides.mapStateToProps
-        ? overrides.mapStateToProps
-        : config.mapStateToProps;
 
     // If the control item is not an object, we have to look up the control data from
     // the centralized controls file.
     // When it is an object we read control data straight from `config` instead
-    const controlData = lookupControlData ? controls[name] : config;
+    const controlData = {
+      ...config,
+      ...controls[name],
+      name,
+    };
+    const {
+      validationErrors,
+      provideFormDataToProps,
+      ...restProps
+    } = controlData;
 
-    // Applying mapStateToProps if needed
-    const additionalProps = mapFn
-      ? { ...controlData, ...mapFn(exploreState, controlData, actions) }
-      : controlData;
-
-    const { validationErrors, provideFormDataToProps } = controlData;
-
+    // if visibility check says the config is not visible, don't render it
+    if (visibility && !visibility.call(config, this.props, controlData)) {
+      return null;
+    }
     return (
       <Control
-        name={name}
         key={`control-${name}`}
-        value={formData[name]}
+        name={name}
         validationErrors={validationErrors}
         actions={actions}
         formData={provideFormDataToProps ? formData : null}
-        {...additionalProps}
+        datasource={formData?.datasource}
+        {...restProps}
       />
     );
   }
 
   renderControlPanelSection(section) {
     const { controls } = this.props;
+    const { label, description } = section;
 
     const hasErrors = section.controlSetRows.some(rows =>
       rows.some(
@@ -151,60 +157,88 @@ class ControlPanelsContainer extends React.Component {
           controls[s].validationErrors.length > 0,
       ),
     );
+    const PanelHeader = () => (
+      <span>
+        <span>{label}</span>{' '}
+        {description && (
+          <InfoTooltipWithTrigger label={label} tooltip={description} />
+        )}
+        {hasErrors && (
+          <InfoTooltipWithTrigger
+            label="validation-errors"
+            bsStyle="danger"
+            tooltip="This section contains validation errors"
+          />
+        )}
+      </span>
+    );
 
     return (
-      <ControlPanelSection
+      <Collapse.Panel
+        className="control-panel-section"
+        header={PanelHeader()}
         key={section.label}
-        label={section.label}
-        startExpanded={section.expanded}
-        hasErrors={hasErrors}
-        description={section.description}
       >
-        {section.controlSetRows.map((controlSets, i) => (
-          <ControlRow
-            key={`controlsetrow-${i}`}
-            className="control-row"
-            controls={controlSets.map(controlItem => {
+        {section.controlSetRows.map((controlSets, i) => {
+          const renderedControls = controlSets
+            .map(controlItem => {
               if (!controlItem) {
                 // When the item is invalid
                 return null;
-              } else if (React.isValidElement(controlItem)) {
+              }
+              if (React.isValidElement(controlItem)) {
                 // When the item is a React element
                 return controlItem;
-              } else if (
-                isPlainObject(controlItem) &&
+              }
+              if (
                 controlItem.name &&
-                controlItem.config
+                controlItem.config &&
+                controlItem.name !== 'datasource'
               ) {
-                const { name, config } = controlItem;
-
-                return this.renderControl(name, config, false);
-              } else if (controls[controlItem]) {
-                // When the item is string name, meaning the control config
-                // is not specified directly. Have to look up the config from
-                // centralized configs.
-                const name = controlItem;
-                return this.renderControl(name, controlConfigs[name], true);
+                return this.renderControl(controlItem);
               }
               return null;
-            })}
-          />
-        ))}
-      </ControlPanelSection>
+            })
+            .filter(x => x !== null);
+          // don't show the row if it is empty
+          if (renderedControls.length === 0) {
+            return null;
+          }
+          return (
+            <ControlRow
+              key={`controlsetrow-${i}`}
+              className="control-row"
+              controls={renderedControls}
+            />
+          );
+        })}
+      </Collapse.Panel>
     );
   }
+
   render() {
-    const allSectionsToRender = this.sectionsToRender();
+    const controlPanelRegistry = getChartControlPanelRegistry();
+    if (
+      !controlPanelRegistry.has(this.props.form_data.viz_type) &&
+      this.context.loading
+    ) {
+      return <Loading />;
+    }
+
     const querySectionsToRender = [];
     const displaySectionsToRender = [];
-    allSectionsToRender.forEach(section => {
+    this.sectionsToRender().forEach(section => {
+      // if at least one control in the section is not `renderTrigger`
+      // or asks to be displayed at the Data tab
       if (
+        section.tabOverride === 'data' ||
         section.controlSetRows.some(rows =>
           rows.some(
             control =>
-              controlConfigs[control] &&
-              (!controlConfigs[control].renderTrigger ||
-                controlConfigs[control].tabOverride === 'data'),
+              control &&
+              control.config &&
+              (!control.config.renderTrigger ||
+                control.config.tabOverride === 'data'),
           ),
         )
       ) {
@@ -214,31 +248,56 @@ class ControlPanelsContainer extends React.Component {
       }
     });
 
+    const showCustomizeTab = displaySectionsToRender.length > 0;
+    const expandedQuerySections = this.sectionsToExpand(querySectionsToRender);
+    const expandedCustomSections = this.sectionsToExpand(
+      displaySectionsToRender,
+    );
+
     return (
-      <div className="scrollbar-container">
-        <div className="scrollbar-content">
-          {this.props.alert && (
-            <Alert bsStyle="warning">
-              {this.props.alert}
-              <i
-                className="fa fa-close pull-right"
-                onClick={this.removeAlert}
-                style={{ cursor: 'pointer' }}
-              />
-            </Alert>
-          )}
-          <Tabs id="controlSections">
-            <Tab eventKey="query" title={t('Data')}>
+      <Styles>
+        {this.props.alert && (
+          <Alert bsStyle="warning">
+            {this.props.alert}
+            <i
+              role="button"
+              aria-label="Remove alert"
+              tabIndex={0}
+              className="fa fa-close pull-right"
+              onClick={this.removeAlert}
+              style={{ cursor: 'pointer' }}
+            />
+          </Alert>
+        )}
+        <ControlPanelsTabs
+          id="controlSections"
+          data-test="control-tabs"
+          fullWidth={showCustomizeTab}
+        >
+          <Tabs.TabPane key="query" tab={t('Data')}>
+            <Collapse
+              bordered
+              defaultActiveKey={expandedQuerySections}
+              expandIconPosition="right"
+              ghost
+            >
               {querySectionsToRender.map(this.renderControlPanelSection)}
-            </Tab>
-            {displaySectionsToRender.length > 0 && (
-              <Tab eventKey="display" title={t('Customize')}>
+            </Collapse>
+          </Tabs.TabPane>
+          {showCustomizeTab && (
+            <Tabs.TabPane key="display" tab={t('Customize')}>
+              <Collapse
+                bordered
+                defaultActiveKey={expandedCustomSections}
+                expandIconPosition="right"
+                ghost
+              >
                 {displaySectionsToRender.map(this.renderControlPanelSection)}
-              </Tab>
-            )}
-          </Tabs>
-        </div>
-      </div>
+              </Collapse>
+            </Tabs.TabPane>
+          )}
+        </ControlPanelsTabs>
+      </Styles>
     );
   }
 }

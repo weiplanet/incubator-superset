@@ -14,15 +14,18 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+from unittest import mock
+
+import pytest
 from sqlalchemy import column
 from sqlalchemy.dialects import oracle
 from sqlalchemy.dialects.oracle import DATE, NVARCHAR, VARCHAR
 
 from superset.db_engine_specs.oracle import OracleEngineSpec
-from tests.db_engine_specs.base_tests import DbEngineSpecTestCase
+from tests.db_engine_specs.base_tests import TestDbEngineSpec
 
 
-class OracleTestCase(DbEngineSpecTestCase):
+class TestOracleDbEngineSpec(TestDbEngineSpec):
     def test_oracle_sqla_column_name_length_exceeded(self):
         col = column("This_Is_32_Character_Column_Name")
         label = OracleEngineSpec.make_label_compatible(col.name)
@@ -37,24 +40,6 @@ class OracleTestCase(DbEngineSpecTestCase):
         self.assertEqual(result, "TRUNC(CAST(\"decimal\" as DATE), 'MONTH')")
         dttm = self.get_dttm()
 
-    def test_convert_dttm(self):
-        dttm = self.get_dttm()
-
-        test_cases = (
-            (
-                OracleEngineSpec.convert_dttm("DATE", dttm),
-                "TO_DATE('2019-01-02', 'YYYY-MM-DD')",
-            ),
-            (
-                OracleEngineSpec.convert_dttm("DATETIME", dttm),
-                """TO_DATE('2019-01-02T03:04:05', 'YYYY-MM-DD"T"HH24:MI:SS')""",
-            ),
-            (
-                OracleEngineSpec.convert_dttm("TIMESTAMP", dttm),
-                """TO_TIMESTAMP('2019-01-02T03:04:05.678900', 'YYYY-MM-DD"T"HH24:MI:SS.ff6')""",
-            ),
-        )
-
     def test_column_datatype_to_string(self):
         test_cases = (
             (DATE(), "DATE"),
@@ -68,3 +53,35 @@ class OracleTestCase(DbEngineSpecTestCase):
                 original, oracle.dialect()
             )
             self.assertEqual(actual, expected)
+
+    def test_fetch_data_no_description(self):
+        cursor = mock.MagicMock()
+        cursor.description = []
+        assert OracleEngineSpec.fetch_data(cursor) == []
+
+    def test_fetch_data(self):
+        cursor = mock.MagicMock()
+        result = ["a", "b"]
+        cursor.fetchall.return_value = result
+        assert OracleEngineSpec.fetch_data(cursor) == result
+
+
+@pytest.mark.parametrize(
+    "date_format,expected",
+    [
+        ("DATE", "TO_DATE('2019-01-02', 'YYYY-MM-DD')"),
+        ("DATETIME", """TO_DATE('2019-01-02T03:04:05', 'YYYY-MM-DD"T"HH24:MI:SS')"""),
+        (
+            "TIMESTAMP",
+            """TO_TIMESTAMP('2019-01-02T03:04:05.678900', 'YYYY-MM-DD"T"HH24:MI:SS.ff6')""",
+        ),
+        (
+            "timestamp",
+            """TO_TIMESTAMP('2019-01-02T03:04:05.678900', 'YYYY-MM-DD"T"HH24:MI:SS.ff6')""",
+        ),
+        ("Other", None),
+    ],
+)
+def test_convert_dttm(date_format, expected):
+    dttm = TestOracleDbEngineSpec.get_dttm()
+    assert OracleEngineSpec.convert_dttm(date_format, dttm) == expected

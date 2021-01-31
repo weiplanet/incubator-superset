@@ -19,11 +19,11 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import cx from 'classnames';
-import { t } from '@superset-ui/translation';
+import { t } from '@superset-ui/core';
 
 import URLShortLinkButton from '../../components/URLShortLinkButton';
 import EmbedCodeButton from './EmbedCodeButton';
-import DisplayQueryButton from './DisplayQueryButton';
+import ConnectedDisplayQueryButton from './DisplayQueryButton';
 import { exportChart, getExploreLongUrl } from '../exploreUtils';
 
 const propTypes = {
@@ -31,27 +31,41 @@ const propTypes = {
   canDownload: PropTypes.oneOfType([PropTypes.string, PropTypes.bool])
     .isRequired,
   chartStatus: PropTypes.string,
+  chartHeight: PropTypes.string.isRequired,
   latestQueryFormData: PropTypes.object,
-  queryResponse: PropTypes.object,
+  queriesResponse: PropTypes.arrayOf(PropTypes.object),
   slice: PropTypes.object,
 };
 
 export default function ExploreActionButtons({
   actions,
   canDownload,
+  chartHeight,
   chartStatus,
   latestQueryFormData,
-  queryResponse,
+  queriesResponse,
   slice,
 }) {
   const exportToCSVClasses = cx('btn btn-default btn-sm', {
-    'disabled disabledButton': !canDownload,
+    disabled: !canDownload,
   });
-  const doExportCSV = exportChart.bind(this, latestQueryFormData, 'csv');
-  const doExportChart = exportChart.bind(this, latestQueryFormData, 'json');
+  const doExportCSV = exportChart.bind(this, {
+    formData: latestQueryFormData,
+    resultType: 'results',
+    resultFormat: 'csv',
+  });
+  const doExportChart = exportChart.bind(this, {
+    formData: latestQueryFormData,
+    resultType: 'results',
+    resultFormat: 'json',
+  });
 
   return (
-    <div className="btn-group results" role="group">
+    <div
+      className="btn-group results"
+      role="group"
+      data-test="btn-group-results"
+    >
       {latestQueryFormData && (
         <URLShortLinkButton
           url={getExploreLongUrl(latestQueryFormData)}
@@ -65,7 +79,9 @@ export default function ExploreActionButtons({
       )}
 
       {latestQueryFormData && (
-        <a
+        <div
+          role="button"
+          tabIndex={0}
           onClick={doExportChart}
           className="btn btn-default btn-sm"
           title={t('Export to .json')}
@@ -73,10 +89,12 @@ export default function ExploreActionButtons({
           rel="noopener noreferrer"
         >
           <i className="fa fa-file-code-o" /> .json
-        </a>
+        </div>
       )}
       {latestQueryFormData && (
-        <a
+        <div
+          role="button"
+          tabIndex={0}
           onClick={doExportCSV}
           className={exportToCSVClasses}
           title={t('Export to .csv format')}
@@ -84,13 +102,15 @@ export default function ExploreActionButtons({
           rel="noopener noreferrer"
         >
           <i className="fa fa-file-text-o" /> .csv
-        </a>
+        </div>
       )}
-      <DisplayQueryButton
-        queryResponse={queryResponse}
+      <ConnectedDisplayQueryButton
+        chartHeight={chartHeight}
+        queryResponse={queriesResponse?.[0]}
         latestQueryFormData={latestQueryFormData}
         chartStatus={chartStatus}
         onOpenInEditor={actions.redirectSQLLab}
+        onOpenPropertiesModal={actions.openPropertiesModal}
         slice={slice}
       />
     </div>

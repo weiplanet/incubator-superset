@@ -20,13 +20,13 @@
 import React from 'react';
 import sinon from 'sinon';
 import { shallow } from 'enzyme';
-import { Label, OverlayTrigger } from 'react-bootstrap';
+import Popover from 'src/common/components/Popover';
 
 import AdhocFilter, {
   EXPRESSION_TYPES,
   CLAUSES,
-} from '../../../../src/explore/AdhocFilter';
-import AdhocFilterOption from '../../../../src/explore/components/AdhocFilterOption';
+} from 'src/explore/components/controls/FilterControl/AdhocFilter';
+import AdhocFilterOption from 'src/explore/components/controls/FilterControl/AdhocFilterOption';
 
 const simpleAdhocFilter = new AdhocFilter({
   expressionType: EXPRESSION_TYPES.SIMPLE,
@@ -52,7 +52,10 @@ function setup(overrides) {
 describe('AdhocFilterOption', () => {
   it('renders an overlay trigger wrapper for the label', () => {
     const { wrapper } = setup();
-    expect(wrapper.find(OverlayTrigger)).toHaveLength(1);
-    expect(wrapper.find(Label)).toHaveLength(1);
+    const overlay = wrapper.find('AdhocFilterPopoverTrigger').shallow();
+    const popover = overlay.find(Popover);
+    expect(popover).toHaveLength(1);
+    expect(popover.props().defaultVisible).toBe(false);
+    expect(overlay.find('OptionControlLabel')).toExist();
   });
 });

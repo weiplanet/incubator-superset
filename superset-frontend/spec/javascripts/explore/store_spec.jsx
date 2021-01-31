@@ -16,8 +16,8 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { getChartControlPanelRegistry } from '@superset-ui/chart';
-import { applyDefaultFormData } from '../../../src/explore/store';
+import { getChartControlPanelRegistry } from '@superset-ui/core';
+import { applyDefaultFormData } from 'src/explore/store';
 
 describe('store', () => {
   beforeAll(() => {
@@ -65,16 +65,6 @@ describe('store', () => {
       };
       const outputFormData = applyDefaultFormData(inputFormData);
       expect(outputFormData.row_limit).toBe(null);
-    });
-
-    it('removes out of scope, or deprecated keys', () => {
-      const inputFormData = {
-        datasource: '11_table',
-        viz_type: 'table',
-        this_should_no_be_here: true,
-      };
-      const outputFormData = applyDefaultFormData(inputFormData);
-      expect(outputFormData.this_should_no_be_here).toBe(undefined);
     });
   });
 });

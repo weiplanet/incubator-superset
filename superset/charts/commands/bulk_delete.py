@@ -18,9 +18,11 @@ import logging
 from typing import List, Optional
 
 from flask_appbuilder.security.sqla.models import User
+from flask_babel import lazy_gettext as _
 
 from superset.charts.commands.exceptions import (
     ChartBulkDeleteFailedError,
+    ChartBulkDeleteFailedReportsExistError,
     ChartForbiddenError,
     ChartNotFoundError,
 )
@@ -29,6 +31,7 @@ from superset.commands.base import BaseCommand
 from superset.commands.exceptions import DeleteFailedError
 from superset.exceptions import SupersetSecurityException
 from superset.models.slice import Slice
+from superset.reports.dao import ReportScheduleDAO
 from superset.views.base import check_ownership
 
 logger = logging.getLogger(__name__)
@@ -44,8 +47,8 @@ class BulkDeleteChartCommand(BaseCommand):
         self.validate()
         try:
             ChartDAO.bulk_delete(self._models)
-        except DeleteFailedError as e:
-            logger.exception(e.exception)
+        except DeleteFailedError as ex:
+            logger.exception(ex.exception)
             raise ChartBulkDeleteFailedError()
 
     def validate(self) -> None:
@@ -53,6 +56,13 @@ class BulkDeleteChartCommand(BaseCommand):
         self._models = ChartDAO.find_by_ids(self._model_ids)
         if not self._models or len(self._models) != len(self._model_ids):
             raise ChartNotFoundError()
+        # Check there are no associated ReportSchedules
+        reports = ReportScheduleDAO.find_by_chart_ids(self._model_ids)
+        if reports:
+            report_names = [report.name for report in reports]
+            raise ChartBulkDeleteFailedReportsExistError(
+                _("There are associated alerts or reports: %s" % ",".join(report_names))
+            )
         # Check ownership
         for model in self._models:
             try:

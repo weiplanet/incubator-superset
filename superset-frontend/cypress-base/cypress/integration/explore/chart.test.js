@@ -17,16 +17,14 @@
  * under the License.
  */
 import { FORM_DATA_DEFAULTS, NUM_METRIC } from './visualizations/shared.helper';
-import readResponseBlob from '../../utils/readResponseBlob';
 
 describe('No Results', () => {
   beforeEach(() => {
     cy.login();
-    cy.server();
-    cy.route('POST', '/superset/explore_json/**').as('getJson');
+    cy.intercept('POST', '/superset/explore_json/**').as('getJson');
   });
 
-  it('No results  message shows up', () => {
+  it('No results message shows up', () => {
     const formData = {
       ...FORM_DATA_DEFAULTS,
       metrics: [NUM_METRIC],
@@ -35,19 +33,16 @@ describe('No Results', () => {
         {
           expressionType: 'SIMPLE',
           subject: 'state',
-          operator: 'in',
+          operator: 'IN',
           comparator: ['Fake State'],
           clause: 'WHERE',
           sqlExpression: null,
-          fromFormData: true,
         },
       ],
     };
 
     cy.visitChartByParams(JSON.stringify(formData));
-    cy.wait('@getJson').then(async xhr => {
-      expect(xhr.status).to.eq(200);
-    });
+    cy.wait('@getJson').its('response.statusCode').should('eq', 200);
     cy.get('div.chart-container').contains('No Results');
   });
 });

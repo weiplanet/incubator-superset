@@ -19,7 +19,10 @@
 import { hot } from 'react-hot-loader/root';
 import React from 'react';
 import { Provider } from 'react-redux';
-
+import { supersetTheme, ThemeProvider } from '@superset-ui/core';
+import { DndProvider } from 'react-dnd';
+import { HTML5Backend } from 'react-dnd-html5-backend';
+import { DynamicPluginProvider } from 'src/components/DynamicPlugins';
 import setupApp from '../setup/setupApp';
 import setupPlugins from '../setup/setupPlugins';
 import DashboardContainer from './containers/Dashboard';
@@ -29,7 +32,13 @@ setupPlugins();
 
 const App = ({ store }) => (
   <Provider store={store}>
-    <DashboardContainer />
+    <DndProvider backend={HTML5Backend}>
+      <ThemeProvider theme={supersetTheme}>
+        <DynamicPluginProvider>
+          <DashboardContainer />
+        </DynamicPluginProvider>
+      </ThemeProvider>
+    </DndProvider>
   </Provider>
 );
 

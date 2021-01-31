@@ -19,15 +19,11 @@
 import React from 'react';
 import configureStore from 'redux-mock-store';
 import thunk from 'redux-thunk';
-
-import { shallow } from 'enzyme';
-
-import { STATUS_OPTIONS } from '../../../src/SqlLab/constants';
+import { styledShallow as shallow } from 'spec/helpers/theming';
+import SouthPaneContainer from 'src/SqlLab/components/SouthPane';
+import ResultSet from 'src/SqlLab/components/ResultSet';
+import { STATUS_OPTIONS } from 'src/SqlLab/constants';
 import { initialState } from './fixtures';
-import SouthPaneContainer, {
-  SouthPane,
-} from '../../../src/SqlLab/components/SouthPane';
-import ResultSet from '../../../src/SqlLab/components/ResultSet';
 
 describe('SouthPane', () => {
   const middlewares = [thunk];
@@ -74,36 +70,24 @@ describe('SouthPane', () => {
     actions: {},
     activeSouthPaneTab: '',
     height: 1,
+    displayLimit: 1,
     databases: {},
     offline: false,
   };
 
   const getWrapper = () =>
-    shallow(<SouthPaneContainer {...mockedProps} />, {
-      context: { store },
-    }).dive();
+    shallow(<SouthPaneContainer store={store} {...mockedProps} />).dive();
 
   let wrapper;
-
-  beforeAll(() => {
-    jest
-      .spyOn(SouthPane.prototype, 'getSouthPaneHeight')
-      .mockImplementation(() => 500);
-  });
 
   it('should render offline when the state is offline', () => {
     wrapper = getWrapper();
     wrapper.setProps({ offline: true });
-    expect(
-      wrapper
-        .find('.m-r-3')
-        .render()
-        .text(),
-    ).toBe(STATUS_OPTIONS.offline);
+    expect(wrapper.childAt(0).text()).toBe(STATUS_OPTIONS.offline);
   });
   it('should pass latest query down to ResultSet component', () => {
     wrapper = getWrapper();
-    expect(wrapper.find(ResultSet)).toHaveLength(1);
+    expect(wrapper.find(ResultSet)).toExist();
     expect(wrapper.find(ResultSet).props().query.id).toEqual(
       mockedProps.latestQueryId,
     );

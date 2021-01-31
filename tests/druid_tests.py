@@ -102,7 +102,7 @@ GB_RESULT_SET = [
 DruidCluster.get_druid_version = lambda _: "0.9.1"  # type: ignore
 
 
-class DruidTests(SupersetTestCase):
+class TestDruid(SupersetTestCase):
 
     """Testing interactions with Druid"""
 
@@ -176,7 +176,7 @@ class DruidTests(SupersetTestCase):
             "viz_type": "table",
             "granularity": "one+day",
             "druid_time_origin": "",
-            "since": "7+days+ago",
+            "since": "7 days ago",
             "until": "now",
             "row_limit": 5000,
             "include_search": "false",
@@ -193,7 +193,7 @@ class DruidTests(SupersetTestCase):
             "viz_type": "table",
             "granularity": "one+day",
             "druid_time_origin": "",
-            "since": "7+days+ago",
+            "since": "7 days ago",
             "until": "now",
             "row_limit": 5000,
             "include_search": "false",
@@ -535,7 +535,7 @@ class DruidTests(SupersetTestCase):
 
         form_data = {
             "viz_type": "table",
-            "since": "7+days+ago",
+            "since": "7 days ago",
             "until": "now",
             "metrics": ["count"],
             "groupby": [],

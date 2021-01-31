@@ -19,14 +19,26 @@ from flask_appbuilder.models.sqla.interface import SQLAInterface
 import superset.models.core as models
 from superset.views.base_api import BaseSupersetModelRestApi
 
+from ...constants import MODEL_API_RW_METHOD_PERMISSION_MAP
 from . import LogMixin
 
 
 class LogRestApi(LogMixin, BaseSupersetModelRestApi):
     datamodel = SQLAInterface(models.Log)
     include_route_methods = {"get_list", "get", "post"}
-    class_permission_name = "LogModelView"
+    class_permission_name = "Log"
+    method_permission_name = MODEL_API_RW_METHOD_PERMISSION_MAP
     resource_name = "log"
     allow_browser_login = True
-    list_columns = ("user.username", "action", "dttm")
+    list_columns = [
+        "user.username",
+        "action",
+        "dttm",
+        "json",
+        "slice_id",
+        "dashboard_id",
+        "user_id",
+        "duration_ms",
+        "referrer",
+    ]
     show_columns = list_columns

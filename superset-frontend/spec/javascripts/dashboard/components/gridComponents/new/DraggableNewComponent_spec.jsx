@@ -18,16 +18,16 @@
  */
 import React from 'react';
 import { mount } from 'enzyme';
+import { DndProvider } from 'react-dnd';
+import { HTML5Backend } from 'react-dnd-html5-backend';
 
-import DragDroppable from '../../../../../../src/dashboard/components/dnd/DragDroppable';
-import DraggableNewComponent from '../../../../../../src/dashboard/components/gridComponents/new/DraggableNewComponent';
-import WithDragDropContext from '../../../helpers/WithDragDropContext';
-
-import { NEW_COMPONENTS_SOURCE_ID } from '../../../../../../src/dashboard/util/constants';
+import DragDroppable from 'src/dashboard/components/dnd/DragDroppable';
+import DraggableNewComponent from 'src/dashboard/components/gridComponents/new/DraggableNewComponent';
+import { NEW_COMPONENTS_SOURCE_ID } from 'src/dashboard/util/constants';
 import {
   NEW_COMPONENT_SOURCE_TYPE,
   CHART_TYPE,
-} from '../../../../../../src/dashboard/util/componentTypes';
+} from 'src/dashboard/util/componentTypes';
 
 describe('DraggableNewComponent', () => {
   const props = {
@@ -41,16 +41,16 @@ describe('DraggableNewComponent', () => {
     // We have to wrap provide DragDropContext for the underlying DragDroppable
     // otherwise we cannot assert on DragDroppable children
     const wrapper = mount(
-      <WithDragDropContext>
+      <DndProvider backend={HTML5Backend}>
         <DraggableNewComponent {...props} {...overrideProps} />
-      </WithDragDropContext>,
+      </DndProvider>,
     );
     return wrapper;
   }
 
   it('should render a DragDroppable', () => {
     const wrapper = setup();
-    expect(wrapper.find(DragDroppable)).toHaveLength(1);
+    expect(wrapper.find(DragDroppable)).toExist();
   });
 
   it('should pass component={ type, id } to DragDroppable', () => {
@@ -79,6 +79,6 @@ describe('DraggableNewComponent', () => {
   it('should add the passed className', () => {
     const wrapper = setup();
     const className = `.new-component-placeholder.${props.className}`;
-    expect(wrapper.find(className)).toHaveLength(1);
+    expect(wrapper.find(className)).toExist();
   });
 });

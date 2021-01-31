@@ -18,39 +18,84 @@
  */
 import React from 'react';
 import PropTypes from 'prop-types';
-import {
-  Col,
-  Collapse,
-  DropdownButton,
-  Label,
-  MenuItem,
-  OverlayTrigger,
-  Row,
-  Tooltip,
-  Well,
-} from 'react-bootstrap';
-import { t } from '@superset-ui/translation';
+import { t, styled, supersetTheme } from '@superset-ui/core';
 
-import ControlHeader from '../ControlHeader';
-import ColumnOption from '../../../components/ColumnOption';
-import MetricOption from '../../../components/MetricOption';
-import DatasourceModal from '../../../datasource/DatasourceModal';
-import ChangeDatasourceModal from '../../../datasource/ChangeDatasourceModal';
-import TooltipWrapper from '../../../components/TooltipWrapper';
-import './DatasourceControl.less';
+import { Dropdown, Menu } from 'src/common/components';
+import { Tooltip } from 'src/common/components/Tooltip';
+import Icon from 'src/components/Icon';
+import ChangeDatasourceModal from 'src/datasource/ChangeDatasourceModal';
+import DatasourceModal from 'src/datasource/DatasourceModal';
+import { postForm } from 'src/explore/exploreUtils';
+import Button from 'src/components/Button';
+import ErrorAlert from 'src/components/ErrorMessage/ErrorAlert';
 
 const propTypes = {
+  actions: PropTypes.object.isRequired,
   onChange: PropTypes.func,
   value: PropTypes.string,
   datasource: PropTypes.object.isRequired,
+  isEditable: PropTypes.bool,
   onDatasourceSave: PropTypes.func,
 };
 
 const defaultProps = {
   onChange: () => {},
-  onDatasourceSave: () => {},
+  onDatasourceSave: null,
   value: null,
+  isEditable: true,
 };
+
+const Styles = styled.div`
+  .data-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid ${({ theme }) => theme.colors.grayscale.light2};
+    padding: ${({ theme }) => 2 * theme.gridUnit}px;
+  }
+  .error-alert {
+    margin: ${({ theme }) => 2 * theme.gridUnit}px;
+  }
+  .ant-dropdown-trigger {
+    margin-left: ${({ theme }) => 2 * theme.gridUnit}px;
+    box-shadow: none;
+    &:active {
+      box-shadow: none;
+    }
+  }
+  .btn-group .open .dropdown-toggle {
+    box-shadow: none;
+    &.button-default {
+      background: none;
+    }
+  }
+  i.angle {
+    color: ${({ theme }) => theme.colors.primary.base};
+  }
+  svg.datasource-modal-trigger {
+    color: ${({ theme }) => theme.colors.primary.base};
+    cursor: pointer;
+  }
+  .title-select {
+    flex: 1 1 100%;
+    display: inline-block;
+    background-color: ${({ theme }) => theme.colors.grayscale.light3};
+    padding: ${({ theme }) => theme.gridUnit * 2}px;
+    border-radius: ${({ theme }) => theme.borderRadius}px;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .dataset-svg {
+    margin-right: ${({ theme }) => 2 * theme.gridUnit}px;
+    flex: none;
+  }
+`;
+
+const CHANGE_DATASET = 'change_dataset';
+const VIEW_IN_SQL_LAB = 'view_in_sql_lab';
+const EDIT_DATASET = 'edit_dataset';
 
 class DatasourceControl extends React.PureComponent {
   constructor(props) {
@@ -58,14 +103,21 @@ class DatasourceControl extends React.PureComponent {
     this.state = {
       showEditDatasourceModal: false,
       showChangeDatasourceModal: false,
-      menuExpanded: false,
     };
+    this.onDatasourceSave = this.onDatasourceSave.bind(this);
     this.toggleChangeDatasourceModal = this.toggleChangeDatasourceModal.bind(
       this,
     );
     this.toggleEditDatasourceModal = this.toggleEditDatasourceModal.bind(this);
     this.toggleShowDatasource = this.toggleShowDatasource.bind(this);
-    this.renderDatasource = this.renderDatasource.bind(this);
+    this.handleMenuItemClick = this.handleMenuItemClick.bind(this);
+  }
+
+  onDatasourceSave(datasource) {
+    this.props.actions.setDatasource(datasource);
+    if (this.props.onDatasourceSave) {
+      this.props.onDatasourceSave(datasource);
+    }
   }
 
   toggleShowDatasource() {
@@ -86,109 +138,123 @@ class DatasourceControl extends React.PureComponent {
     }));
   }
 
-  renderDatasource() {
-    const datasource = this.props.datasource;
-    return (
-      <div className="m-t-10">
-        <Well className="m-t-0">
-          <div className="m-b-10">
-            <Label>
-              <i className="fa fa-database" /> {datasource.database.backend}
-            </Label>
-            {` ${datasource.database.name} `}
-          </div>
-          <Row className="datasource-container">
-            <Col md={6}>
-              <strong>Columns</strong>
-              {datasource.columns.map(col => (
-                <div key={col.column_name}>
-                  <ColumnOption showType column={col} />
-                </div>
-              ))}
-            </Col>
-            <Col md={6}>
-              <strong>Metrics</strong>
-              {datasource.metrics.map(m => (
-                <div key={m.metric_name}>
-                  <MetricOption metric={m} showType />
-                </div>
-              ))}
-            </Col>
-          </Row>
-        </Well>
-      </div>
-    );
+  handleMenuItemClick({ key }) {
+    if (key === CHANGE_DATASET) {
+      this.toggleChangeDatasourceModal();
+    }
+    if (key === EDIT_DATASET) {
+      this.toggleEditDatasourceModal();
+    }
+    if (key === VIEW_IN_SQL_LAB) {
+      const { datasource } = this.props;
+      const payload = {
+        datasourceKey: `${datasource.id}__${datasource.type}`,
+        sql: datasource.sql,
+      };
+      postForm('/superset/sqllab', payload);
+    }
   }
 
   render() {
     const { showChangeDatasourceModal, showEditDatasourceModal } = this.state;
-    const { datasource, onChange, onDatasourceSave, value } = this.props;
+    const { datasource, onChange } = this.props;
+    const isMissingDatasource = datasource.id == null;
+    const datasourceMenu = (
+      <Menu onClick={this.handleMenuItemClick}>
+        {this.props.isEditable && (
+          <Menu.Item key={EDIT_DATASET} data-test="edit-dataset">
+            {t('Edit dataset')}
+          </Menu.Item>
+        )}
+        <Menu.Item key={CHANGE_DATASET}>{t('Change dataset')}</Menu.Item>
+        <Menu.Item key={VIEW_IN_SQL_LAB}>{t('View in SQL Lab')}</Menu.Item>
+      </Menu>
+    );
+
+    const { health_check_message: healthCheckMessage } = datasource;
+
     return (
-      <div>
-        <ControlHeader {...this.props} />
-        <div className="btn-group label-dropdown">
-          <TooltipWrapper
-            label="change-datasource"
-            tooltip={t('Click to change the datasource')}
-          >
-            <DropdownButton
-              title={datasource.name}
-              className="label label-default label-btn m-r-5"
-              bsSize="sm"
-              id="datasource_menu"
-            >
-              <MenuItem eventKey="3" onClick={this.toggleChangeDatasourceModal}>
-                {t('Change Datasource')}
-              </MenuItem>
-              {datasource.type === 'table' && (
-                <MenuItem
-                  eventKey="3"
-                  href={`/superset/sqllab?datasourceKey=${value}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {t('Explore in SQL Lab')}
-                </MenuItem>
-              )}
-              <MenuItem eventKey="3" onClick={this.toggleEditDatasourceModal}>
-                {t('Edit Datasource')}
-              </MenuItem>
-            </DropdownButton>
-          </TooltipWrapper>
-          <OverlayTrigger
-            placement="right"
-            overlay={
-              <Tooltip id={'toggle-datasource-tooltip'}>
-                {t('Expand/collapse datasource configuration')}
-              </Tooltip>
-            }
-          >
-            <a href="#">
-              <i
-                className={`fa fa-${
-                  this.state.showDatasource ? 'minus' : 'plus'
-                }-square m-r-5 m-l-5 m-t-4`}
-                onClick={this.toggleShowDatasource}
+      <Styles className="DatasourceControl">
+        <div className="data-container">
+          <Icon name="dataset-physical" className="dataset-svg" />
+          {/* Add a tooltip only for long dataset names */}
+          {!isMissingDatasource && datasource.name.length > 25 ? (
+            <Tooltip title={datasource.name}>
+              <span className="title-select">{datasource.name}</span>
+            </Tooltip>
+          ) : (
+            <span title={datasource.name} className="title-select">
+              {datasource.name}
+            </span>
+          )}
+          {healthCheckMessage && (
+            <Tooltip title={healthCheckMessage}>
+              <Icon
+                name="alert-solid"
+                color={supersetTheme.colors.warning.base}
               />
-            </a>
-          </OverlayTrigger>
+            </Tooltip>
+          )}
+          <Dropdown
+            overlay={datasourceMenu}
+            trigger={['click']}
+            data-test="datasource-menu"
+          >
+            <Tooltip title={t('More dataset related options')}>
+              <Icon
+                className="datasource-modal-trigger"
+                data-test="datasource-menu-trigger"
+                name="more-horiz"
+              />
+            </Tooltip>
+          </Dropdown>
         </div>
-        <Collapse in={this.state.showDatasource}>
-          {this.renderDatasource()}
-        </Collapse>
-        <DatasourceModal
-          datasource={datasource}
-          show={showEditDatasourceModal}
-          onDatasourceSave={onDatasourceSave}
-          onHide={this.toggleEditDatasourceModal}
-        />
-        <ChangeDatasourceModal
-          onDatasourceSave={onDatasourceSave}
-          onHide={this.toggleChangeDatasourceModal}
-          show={showChangeDatasourceModal}
-          onChange={onChange}
-        />
-      </div>
+        {/* missing dataset */}
+        {isMissingDatasource && (
+          <div className="error-alert">
+            <ErrorAlert
+              level="warning"
+              title={t('Missing dataset')}
+              source="explore"
+              subtitle={
+                <>
+                  <p>
+                    {t(
+                      'The dataset linked to this chart may have been deleted.',
+                    )}
+                  </p>
+                  <p>
+                    <Button
+                      buttonStyle="primary"
+                      onClick={() =>
+                        this.handleMenuItemClick({ key: CHANGE_DATASET })
+                      }
+                    >
+                      {t('Change dataset')}
+                    </Button>
+                  </p>
+                </>
+              }
+            />
+          </div>
+        )}
+        {showEditDatasourceModal && (
+          <DatasourceModal
+            datasource={datasource}
+            show={showEditDatasourceModal}
+            onDatasourceSave={this.onDatasourceSave}
+            onHide={this.toggleEditDatasourceModal}
+          />
+        )}
+        {showChangeDatasourceModal && (
+          <ChangeDatasourceModal
+            onDatasourceSave={this.onDatasourceSave}
+            onHide={this.toggleChangeDatasourceModal}
+            show={showChangeDatasourceModal}
+            onChange={onChange}
+          />
+        )}
+      </Styles>
     );
   }
 }

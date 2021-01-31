@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from flask_appbuilder.models.sqla import Model
 from flask_appbuilder.security.sqla.models import User
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 class UpdateDashboardCommand(BaseCommand):
-    def __init__(self, user: User, model_id: int, data: Dict):
+    def __init__(self, user: User, model_id: int, data: Dict[str, Any]):
         self._actor = user
         self._model_id = model_id
         self._properties = data.copy()
@@ -49,9 +49,10 @@ class UpdateDashboardCommand(BaseCommand):
     def run(self) -> Model:
         self.validate()
         try:
-            dashboard = DashboardDAO.update(self._model, self._properties)
-        except DAOUpdateFailedError as e:
-            logger.exception(e.exception)
+            dashboard = DashboardDAO.update(self._model, self._properties, commit=False)
+            dashboard = DashboardDAO.update_charts_owners(dashboard, commit=True)
+        except DAOUpdateFailedError as ex:
+            logger.exception(ex.exception)
             raise DashboardUpdateFailedError()
         return dashboard
 
@@ -80,8 +81,8 @@ class UpdateDashboardCommand(BaseCommand):
         try:
             owners = populate_owners(self._actor, owner_ids)
             self._properties["owners"] = owners
-        except ValidationError as e:
-            exceptions.append(e)
+        except ValidationError as ex:
+            exceptions.append(ex)
         if exceptions:
             exception = DashboardInvalidError()
             exception.add_list(exceptions)

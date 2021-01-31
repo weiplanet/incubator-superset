@@ -19,18 +19,18 @@
 import React from 'react';
 import { mount } from 'enzyme';
 import sinon from 'sinon';
+import { DndProvider } from 'react-dnd';
+import { HTML5Backend } from 'react-dnd-html5-backend';
 
-import DeleteComponentButton from '../../../../../src/dashboard/components/DeleteComponentButton';
-import HoverMenu from '../../../../../src/dashboard/components/menu/HoverMenu';
-import DragDroppable from '../../../../../src/dashboard/components/dnd/DragDroppable';
-import Divider from '../../../../../src/dashboard/components/gridComponents/Divider';
-import newComponentFactory from '../../../../../src/dashboard/util/newComponentFactory';
+import DeleteComponentButton from 'src/dashboard/components/DeleteComponentButton';
+import HoverMenu from 'src/dashboard/components/menu/HoverMenu';
+import DragDroppable from 'src/dashboard/components/dnd/DragDroppable';
+import Divider from 'src/dashboard/components/gridComponents/Divider';
+import newComponentFactory from 'src/dashboard/util/newComponentFactory';
 import {
   DIVIDER_TYPE,
   DASHBOARD_GRID_TYPE,
-} from '../../../../../src/dashboard/util/componentTypes';
-
-import WithDragDropContext from '../../helpers/WithDragDropContext';
+} from 'src/dashboard/util/componentTypes';
 
 describe('Divider', () => {
   const props = {
@@ -49,32 +49,32 @@ describe('Divider', () => {
     // We have to wrap provide DragDropContext for the underlying DragDroppable
     // otherwise we cannot assert on DragDroppable children
     const wrapper = mount(
-      <WithDragDropContext>
+      <DndProvider backend={HTML5Backend}>
         <Divider {...props} {...overrideProps} />
-      </WithDragDropContext>,
+      </DndProvider>,
     );
     return wrapper;
   }
 
   it('should render a DragDroppable', () => {
     const wrapper = setup();
-    expect(wrapper.find(DragDroppable)).toHaveLength(1);
+    expect(wrapper.find(DragDroppable)).toExist();
   });
 
   it('should render a div with class "dashboard-component-divider"', () => {
     const wrapper = setup();
-    expect(wrapper.find('.dashboard-component-divider')).toHaveLength(1);
+    expect(wrapper.find('.dashboard-component-divider')).toExist();
   });
 
   it('should render a HoverMenu with DeleteComponentButton in editMode', () => {
     let wrapper = setup();
-    expect(wrapper.find(HoverMenu)).toHaveLength(0);
-    expect(wrapper.find(DeleteComponentButton)).toHaveLength(0);
+    expect(wrapper.find(HoverMenu)).not.toExist();
+    expect(wrapper.find(DeleteComponentButton)).not.toExist();
 
     // we cannot set props on the Divider because of the WithDragDropContext wrapper
     wrapper = setup({ editMode: true });
-    expect(wrapper.find(HoverMenu)).toHaveLength(1);
-    expect(wrapper.find(DeleteComponentButton)).toHaveLength(1);
+    expect(wrapper.find(HoverMenu)).toExist();
+    expect(wrapper.find(DeleteComponentButton)).toExist();
   });
 
   it('should call deleteComponent when deleted', () => {

@@ -20,29 +20,32 @@ import { Provider } from 'react-redux';
 import React from 'react';
 import { shallow, mount } from 'enzyme';
 import sinon from 'sinon';
-
+import fetchMock from 'fetch-mock';
 import { ParentSize } from '@vx/responsive';
+import { supersetTheme, ThemeProvider } from '@superset-ui/core';
 import { Sticky, StickyContainer } from 'react-sticky';
 import { TabContainer, TabContent, TabPane } from 'react-bootstrap';
+import { DndProvider } from 'react-dnd';
+import { HTML5Backend } from 'react-dnd-html5-backend';
 
-import BuilderComponentPane from '../../../../src/dashboard/components/BuilderComponentPane';
-import DashboardBuilder from '../../../../src/dashboard/components/DashboardBuilder';
-import DashboardComponent from '../../../../src/dashboard/containers/DashboardComponent';
-import DashboardHeader from '../../../../src/dashboard/containers/DashboardHeader';
-import DashboardGrid from '../../../../src/dashboard/containers/DashboardGrid';
-import * as dashboardStateActions from '../../../../src/dashboard/actions/dashboardState';
-import { BUILDER_PANE_TYPE } from '../../../../src/dashboard/util/constants';
+import BuilderComponentPane from 'src/dashboard/components/BuilderComponentPane';
+import DashboardBuilder from 'src/dashboard/components/DashboardBuilder';
+import DashboardComponent from 'src/dashboard/containers/DashboardComponent';
+import DashboardHeader from 'src/dashboard/containers/DashboardHeader';
+import DashboardGrid from 'src/dashboard/containers/DashboardGrid';
+import * as dashboardStateActions from 'src/dashboard/actions/dashboardState';
 
-import WithDragDropContext from '../helpers/WithDragDropContext';
 import {
   dashboardLayout as undoableDashboardLayout,
   dashboardLayoutWithTabs as undoableDashboardLayoutWithTabs,
-} from '../fixtures/mockDashboardLayout';
+} from 'spec/fixtures/mockDashboardLayout';
 
-import { mockStore, mockStoreWithTabs } from '../fixtures/mockStore';
+import { mockStore, mockStoreWithTabs } from 'spec/fixtures/mockStore';
 
 const dashboardLayout = undoableDashboardLayout.present;
 const layoutWithTabs = undoableDashboardLayoutWithTabs.present;
+
+fetchMock.get('glob:*/csstemplateasyncmodelview/api/read', {});
 
 describe('DashboardBuilder', () => {
   let favStarStub;
@@ -63,11 +66,11 @@ describe('DashboardBuilder', () => {
     deleteTopLevelTabs() {},
     editMode: false,
     showBuilderPane() {},
-    builderPaneType: BUILDER_PANE_TYPE.NONE,
     setColorSchemeAndUnsavedChanges() {},
     colorScheme: undefined,
     handleComponentDrop() {},
     setDirectPathToChild: sinon.spy(),
+    setMountedTab() {},
   };
 
   function setup(overrideProps, useProvider = false, store = mockStore) {
@@ -75,8 +78,12 @@ describe('DashboardBuilder', () => {
     return useProvider
       ? mount(
           <Provider store={store}>
-            <WithDragDropContext>{builder}</WithDragDropContext>
+            <DndProvider backend={HTML5Backend}>{builder}</DndProvider>
           </Provider>,
+          {
+            wrappingComponent: ThemeProvider,
+            wrappingComponentProps: { theme: supersetTheme },
+          },
         )
       : shallow(builder);
   }
@@ -98,7 +105,7 @@ describe('DashboardBuilder', () => {
 
   it('should render a DragDroppable DashboardHeader', () => {
     const wrapper = setup(null, true);
-    expect(wrapper.find(DashboardHeader)).toHaveLength(1);
+    expect(wrapper.find(DashboardHeader)).toExist();
   });
 
   it('should render a Sticky top-level Tabs if the dashboard has tabs', () => {
@@ -128,11 +135,7 @@ describe('DashboardBuilder', () => {
 
   it('should set animation=true, mountOnEnter=true, and unmounOnExit=false on TabContainer for perf', () => {
     const wrapper = setup({ dashboardLayout: layoutWithTabs });
-    const tabProps = wrapper
-      .find(ParentSize)
-      .dive()
-      .find(TabContainer)
-      .props();
+    const tabProps = wrapper.find(ParentSize).dive().find(TabContainer).props();
     expect(tabProps.animation).toBe(true);
     expect(tabProps.mountOnEnter).toBe(true);
     expect(tabProps.unmountOnExit).toBe(false);
@@ -149,26 +152,24 @@ describe('DashboardBuilder', () => {
 
   it('should render a BuilderComponentPane if editMode=true and user selects "Insert Components" pane', () => {
     const wrapper = setup();
-    expect(wrapper.find(BuilderComponentPane)).toHaveLength(0);
+    expect(wrapper.find(BuilderComponentPane)).not.toExist();
 
     wrapper.setProps({
       ...props,
       editMode: true,
-      builderPaneType: BUILDER_PANE_TYPE.ADD_COMPONENTS,
     });
-    expect(wrapper.find(BuilderComponentPane)).toHaveLength(1);
+    expect(wrapper.find(BuilderComponentPane)).toExist();
   });
 
   it('should render a BuilderComponentPane if editMode=true and user selects "Colors" pane', () => {
     const wrapper = setup();
-    expect(wrapper.find(BuilderComponentPane)).toHaveLength(0);
+    expect(wrapper.find(BuilderComponentPane)).not.toExist();
 
     wrapper.setProps({
       ...props,
       editMode: true,
-      builderPaneType: BUILDER_PANE_TYPE.COLORS,
     });
-    expect(wrapper.find(BuilderComponentPane)).toHaveLength(1);
+    expect(wrapper.find(BuilderComponentPane)).toExist();
   });
 
   it('should change redux state if a top-level Tab is clicked', () => {
@@ -181,7 +182,7 @@ describe('DashboardBuilder', () => {
     expect(wrapper.find(TabContainer).prop('activeKey')).toBe(0);
 
     wrapper
-      .find('.dashboard-component-tabs .nav-tabs a')
+      .find('.dashboard-component-tabs .ant-tabs .ant-tabs-tab')
       .at(1)
       .simulate('click');
 

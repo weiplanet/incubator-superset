@@ -15,23 +15,53 @@
 # specific language governing permissions and limitations
 # under the License.
 # isort:skip_file
+import datetime
 import inspect
+import re
 import unittest
 from unittest.mock import Mock, patch
 
+import pandas as pd
 import prison
-from flask import g
+import pytest
+import random
 
-import tests.test_app
-from superset import app, appbuilder, db, security_manager, viz
+from flask import current_app, g
+from sqlalchemy import Float, Date, String
+
+from superset.models.dashboard import Dashboard
+from tests.fixtures.world_bank_dashboard import load_world_bank_dashboard_with_slices
+
+from superset import app, appbuilder, db, security_manager, viz, ConnectorRegistry
 from superset.connectors.druid.models import DruidCluster, DruidDatasource
 from superset.connectors.sqla.models import RowLevelSecurityFilter, SqlaTable
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import SupersetSecurityException
 from superset.models.core import Database
 from superset.models.slice import Slice
+from superset.sql_parse import Table
 from superset.utils.core import get_example_database
 
 from .base_tests import SupersetTestCase
+from .dashboard_utils import (
+    create_table_for_dashboard,
+    create_slice,
+    create_dashboard,
+)
+from .fixtures.energy_dashboard import load_energy_table_with_slice
+from .fixtures.unicode_dashboard import load_unicode_dashboard_with_slice
+from tests.fixtures.birth_names_dashboard import load_birth_names_dashboard_with_slices
+
+NEW_SECURITY_CONVERGE_VIEWS = (
+    "Annotation",
+    "Database",
+    "Dataset",
+    "Dashboard",
+    "CssTemplate",
+    "Chart",
+    "Query",
+    "SavedQuery",
+)
 
 
 def get_perm_tuples(role_name):
@@ -63,7 +93,7 @@ def delete_schema_perm(view_menu_name: str) -> None:
     return None
 
 
-class RolePermissionTests(SupersetTestCase):
+class TestRolePermission(SupersetTestCase):
     """Testing export role permissions."""
 
     def setUp(self):
@@ -128,7 +158,7 @@ class RolePermissionTests(SupersetTestCase):
         stored_table = (
             session.query(SqlaTable).filter_by(table_name="tmp_perm_table").one()
         )
-        self.assertEquals(
+        self.assertEqual(
             stored_table.perm, f"[examples].[tmp_perm_table](id:{stored_table.id})"
         )
         self.assertIsNotNone(
@@ -136,7 +166,7 @@ class RolePermissionTests(SupersetTestCase):
                 "datasource_access", stored_table.perm
             )
         )
-        self.assertEquals(stored_table.schema_perm, "[examples].[tmp_schema]")
+        self.assertEqual(stored_table.schema_perm, "[examples].[tmp_schema]")
         self.assertIsNotNone(
             security_manager.find_permission_view_menu(
                 "schema_access", stored_table.schema_perm
@@ -149,7 +179,7 @@ class RolePermissionTests(SupersetTestCase):
         stored_table = (
             session.query(SqlaTable).filter_by(table_name="tmp_perm_table_v2").one()
         )
-        self.assertEquals(
+        self.assertEqual(
             stored_table.perm, f"[examples].[tmp_perm_table_v2](id:{stored_table.id})"
         )
         self.assertIsNotNone(
@@ -158,7 +188,7 @@ class RolePermissionTests(SupersetTestCase):
             )
         )
         # no changes in schema
-        self.assertEquals(stored_table.schema_perm, "[examples].[tmp_schema]")
+        self.assertEqual(stored_table.schema_perm, "[examples].[tmp_schema]")
         self.assertIsNotNone(
             security_manager.find_permission_view_menu(
                 "schema_access", stored_table.schema_perm
@@ -171,7 +201,7 @@ class RolePermissionTests(SupersetTestCase):
         stored_table = (
             session.query(SqlaTable).filter_by(table_name="tmp_perm_table_v2").one()
         )
-        self.assertEquals(
+        self.assertEqual(
             stored_table.perm, f"[examples].[tmp_perm_table_v2](id:{stored_table.id})"
         )
         self.assertIsNotNone(
@@ -180,7 +210,7 @@ class RolePermissionTests(SupersetTestCase):
             )
         )
         # no changes in schema
-        self.assertEquals(stored_table.schema_perm, "[examples].[tmp_schema_v2]")
+        self.assertEqual(stored_table.schema_perm, "[examples].[tmp_schema_v2]")
         self.assertIsNotNone(
             security_manager.find_permission_view_menu(
                 "schema_access", stored_table.schema_perm
@@ -197,7 +227,7 @@ class RolePermissionTests(SupersetTestCase):
         stored_table = (
             session.query(SqlaTable).filter_by(table_name="tmp_perm_table_v2").one()
         )
-        self.assertEquals(
+        self.assertEqual(
             stored_table.perm, f"[tmp_db].[tmp_perm_table_v2](id:{stored_table.id})"
         )
         self.assertIsNotNone(
@@ -206,7 +236,7 @@ class RolePermissionTests(SupersetTestCase):
             )
         )
         # no changes in schema
-        self.assertEquals(stored_table.schema_perm, "[tmp_db].[tmp_schema_v2]")
+        self.assertEqual(stored_table.schema_perm, "[tmp_db].[tmp_schema_v2]")
         self.assertIsNotNone(
             security_manager.find_permission_view_menu(
                 "schema_access", stored_table.schema_perm
@@ -219,7 +249,7 @@ class RolePermissionTests(SupersetTestCase):
         stored_table = (
             session.query(SqlaTable).filter_by(table_name="tmp_perm_table_v2").one()
         )
-        self.assertEquals(
+        self.assertEqual(
             stored_table.perm, f"[tmp_db].[tmp_perm_table_v2](id:{stored_table.id})"
         )
         self.assertIsNotNone(
@@ -233,7 +263,9 @@ class RolePermissionTests(SupersetTestCase):
         session.delete(stored_table)
         session.commit()
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices")
     def test_set_perm_druid_datasource(self):
+        self.create_druid_test_objects()
         session = db.session
         druid_cluster = (
             session.query(DruidCluster).filter_by(cluster_name="druid_test").one()
@@ -252,7 +284,7 @@ class RolePermissionTests(SupersetTestCase):
             .filter_by(datasource_name="tmp_datasource")
             .one()
         )
-        self.assertEquals(
+        self.assertEqual(
             stored_datasource.perm,
             f"[druid_test].[tmp_datasource](id:{stored_datasource.id})",
         )
@@ -266,7 +298,7 @@ class RolePermissionTests(SupersetTestCase):
         # store with a schema
         stored_datasource.datasource_name = "tmp_schema.tmp_datasource"
         session.commit()
-        self.assertEquals(
+        self.assertEqual(
             stored_datasource.perm,
             f"[druid_test].[tmp_schema.tmp_datasource](id:{stored_datasource.id})",
         )
@@ -295,7 +327,7 @@ class RolePermissionTests(SupersetTestCase):
             .filter_by(cluster_name="tmp_druid_cluster")
             .one()
         )
-        self.assertEquals(
+        self.assertEqual(
             stored_cluster.perm, f"[tmp_druid_cluster].(id:{stored_cluster.id})"
         )
         self.assertIsNotNone(
@@ -306,7 +338,7 @@ class RolePermissionTests(SupersetTestCase):
 
         stored_cluster.cluster_name = "tmp_druid_cluster2"
         session.commit()
-        self.assertEquals(
+        self.assertEqual(
             stored_cluster.perm, f"[tmp_druid_cluster2].(id:{stored_cluster.id})"
         )
         self.assertIsNotNone(
@@ -328,7 +360,7 @@ class RolePermissionTests(SupersetTestCase):
         stored_db = (
             session.query(Database).filter_by(database_name="tmp_database").one()
         )
-        self.assertEquals(stored_db.perm, f"[tmp_database].(id:{stored_db.id})")
+        self.assertEqual(stored_db.perm, f"[tmp_database].(id:{stored_db.id})")
         self.assertIsNotNone(
             security_manager.find_permission_view_menu(
                 "database_access", stored_db.perm
@@ -340,7 +372,7 @@ class RolePermissionTests(SupersetTestCase):
         stored_db = (
             session.query(Database).filter_by(database_name="tmp_database2").one()
         )
-        self.assertEquals(stored_db.perm, f"[tmp_database2].(id:{stored_db.id})")
+        self.assertEqual(stored_db.perm, f"[tmp_database2].(id:{stored_db.id})")
         self.assertIsNotNone(
             security_manager.find_permission_view_menu(
                 "database_access", stored_db.perm
@@ -349,6 +381,53 @@ class RolePermissionTests(SupersetTestCase):
 
         session.delete(stored_db)
         session.commit()
+
+    def test_hybrid_perm_druid_cluster(self):
+        cluster = DruidCluster(cluster_name="tmp_druid_cluster3")
+        db.session.add(cluster)
+
+        id_ = (
+            db.session.query(DruidCluster.id)
+            .filter_by(cluster_name="tmp_druid_cluster3")
+            .scalar()
+        )
+
+        record = (
+            db.session.query(DruidCluster)
+            .filter_by(perm=f"[tmp_druid_cluster3].(id:{id_})")
+            .one()
+        )
+
+        self.assertEqual(record.get_perm(), record.perm)
+        self.assertEqual(record.id, id_)
+        self.assertEqual(record.cluster_name, "tmp_druid_cluster3")
+        db.session.delete(cluster)
+        db.session.commit()
+
+    def test_hybrid_perm_database(self):
+        database = Database(
+            database_name="tmp_database3", sqlalchemy_uri="sqlite://test"
+        )
+
+        db.session.add(database)
+
+        id_ = (
+            db.session.query(Database.id)
+            .filter_by(database_name="tmp_database3")
+            .scalar()
+        )
+
+        record = (
+            db.session.query(Database)
+            .filter_by(perm=f"[tmp_database3].(id:{id_})")
+            .one()
+        )
+
+        self.assertEqual(record.get_perm(), record.perm)
+        self.assertEqual(record.id, id_)
+        self.assertEqual(record.database_name, "tmp_database3")
+        db.session.delete(database)
+        db.session.commit()
 
     def test_set_perm_slice(self):
         session = db.session
@@ -371,9 +450,9 @@ class RolePermissionTests(SupersetTestCase):
         session.commit()
 
         slice = session.query(Slice).filter_by(slice_name="slice_name").one()
-        self.assertEquals(slice.perm, table.perm)
-        self.assertEquals(slice.perm, f"[tmp_database].[tmp_perm_table](id:{table.id})")
-        self.assertEquals(slice.schema_perm, table.schema_perm)
+        self.assertEqual(slice.perm, table.perm)
+        self.assertEqual(slice.perm, f"[tmp_database].[tmp_perm_table](id:{table.id})")
+        self.assertEqual(slice.schema_perm, table.schema_perm)
         self.assertIsNone(slice.schema_perm)
 
         table.schema = "tmp_perm_schema"
@@ -381,8 +460,8 @@ class RolePermissionTests(SupersetTestCase):
         session.commit()
         # TODO(bogdan): modify slice permissions on the table update.
         self.assertNotEquals(slice.perm, table.perm)
-        self.assertEquals(slice.perm, f"[tmp_database].[tmp_perm_table](id:{table.id})")
-        self.assertEquals(
+        self.assertEqual(slice.perm, f"[tmp_database].[tmp_perm_table](id:{table.id})")
+        self.assertEqual(
             table.perm, f"[tmp_database].[tmp_perm_table_v2](id:{table.id})"
         )
         # TODO(bogdan): modify slice schema permissions on the table update.
@@ -392,12 +471,12 @@ class RolePermissionTests(SupersetTestCase):
         # updating slice refreshes the permissions
         slice.slice_name = "slice_name_v2"
         session.commit()
-        self.assertEquals(slice.perm, table.perm)
-        self.assertEquals(
+        self.assertEqual(slice.perm, table.perm)
+        self.assertEqual(
             slice.perm, f"[tmp_database].[tmp_perm_table_v2](id:{table.id})"
         )
-        self.assertEquals(slice.schema_perm, table.schema_perm)
-        self.assertEquals(slice.schema_perm, "[tmp_database].[tmp_perm_schema]")
+        self.assertEqual(slice.schema_perm, table.schema_perm)
+        self.assertEqual(slice.schema_perm, "[tmp_database].[tmp_perm_schema]")
 
         session.delete(slice)
         session.delete(table)
@@ -412,10 +491,10 @@ class RolePermissionTests(SupersetTestCase):
         mock_g.user = security_manager.find_user("admin")
         with self.client.application.test_request_context():
             database = get_example_database()
-            schemas = security_manager.schemas_accessible_by_user(
+            schemas = security_manager.get_schemas_accessible_by_user(
                 database, ["1", "2", "3"]
             )
-            self.assertEquals(schemas, ["1", "2", "3"])  # no changes
+            self.assertEqual(schemas, ["1", "2", "3"])  # no changes
 
     @patch("superset.security.manager.g")
     def test_schemas_accessible_by_user_schema_access(self, mock_g):
@@ -424,11 +503,11 @@ class RolePermissionTests(SupersetTestCase):
         mock_g.user = security_manager.find_user("gamma")
         with self.client.application.test_request_context():
             database = get_example_database()
-            schemas = security_manager.schemas_accessible_by_user(
+            schemas = security_manager.get_schemas_accessible_by_user(
                 database, ["1", "2", "3"]
             )
             # temp_schema is not passed in the params
-            self.assertEquals(schemas, ["1"])
+            self.assertEqual(schemas, ["1"])
         delete_schema_perm("[examples].[1]")
 
     @patch("superset.security.manager.g")
@@ -437,10 +516,10 @@ class RolePermissionTests(SupersetTestCase):
         mock_g.user = security_manager.find_user("gamma")
         with self.client.application.test_request_context():
             database = get_example_database()
-            schemas = security_manager.schemas_accessible_by_user(
+            schemas = security_manager.get_schemas_accessible_by_user(
                 database, ["temp_schema", "2", "3"]
             )
-            self.assertEquals(schemas, ["temp_schema"])
+            self.assertEqual(schemas, ["temp_schema"])
 
     @patch("superset.security.manager.g")
     def test_schemas_accessible_by_user_datasource_and_schema_access(self, mock_g):
@@ -449,17 +528,22 @@ class RolePermissionTests(SupersetTestCase):
         mock_g.user = security_manager.find_user("gamma")
         with self.client.application.test_request_context():
             database = get_example_database()
-            schemas = security_manager.schemas_accessible_by_user(
+            schemas = security_manager.get_schemas_accessible_by_user(
                 database, ["temp_schema", "2", "3"]
             )
-            self.assertEquals(schemas, ["temp_schema", "2"])
+            self.assertEqual(schemas, ["temp_schema", "2"])
         vm = security_manager.find_permission_view_menu(
             "schema_access", "[examples].[2]"
         )
         self.assertIsNotNone(vm)
         delete_schema_perm("[examples].[2]")
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices")
     def test_gamma_user_schema_access_to_dashboards(self):
+        dash = db.session.query(Dashboard).filter_by(slug="world_health").first()
+        dash.published = True
+        db.session.commit()
+
         self.login(username="gamma")
         data = str(self.client.get("api/v1/dashboard/").data)
         self.assertIn("/superset/dashboard/world_health/", data)
@@ -471,6 +555,7 @@ class RolePermissionTests(SupersetTestCase):
         self.assertIn("wb_health_population", data)
         self.assertNotIn("birth_names", data)
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices")
     def test_gamma_user_schema_access_to_charts(self):
         self.login(username="gamma")
         data = str(self.client.get("api/v1/chart/").data)
@@ -481,6 +566,52 @@ class RolePermissionTests(SupersetTestCase):
             "Parallel Coordinates", data
         )  # wb_health_population slice, has access
         self.assertNotIn("Girl Name Cloud", data)  # birth_names slice, no access
+
+    def test_public_sync_role_data_perms(self):
+        """
+        Security: Tests if the sync role method preserves data access permissions
+        if they already exist on a public role.
+        Also check that non data access permissions are removed
+        """
+        table = db.session.query(SqlaTable).filter_by(table_name="birth_names").one()
+        self.grant_public_access_to_table(table)
+        public_role = security_manager.get_public_role()
+        unwanted_pvm = security_manager.find_permission_view_menu(
+            "menu_access", "Security"
+        )
+        public_role.permissions.append(unwanted_pvm)
+        db.session.commit()
+
+        security_manager.sync_role_definitions()
+        public_role = security_manager.get_public_role()
+        public_role_resource_names = [
+            permission.view_menu.name for permission in public_role.permissions
+        ]
+
+        assert table.get_perm() in public_role_resource_names
+        assert "Security" not in public_role_resource_names
+
+        # Cleanup
+        self.revoke_public_access_to_table(table)
+
+    def test_public_sync_role_builtin_perms(self):
+        """
+        Security: Tests public role creation based on a builtin role
+        """
+        current_app.config["PUBLIC_ROLE_LIKE"] = "TestRole"
+
+        security_manager.sync_role_definitions()
+        public_role = security_manager.get_public_role()
+        public_role_resource_names = [
+            [permission.view_menu.name, permission.permission.name]
+            for permission in public_role.permissions
+        ]
+        for pvm in current_app.config["FAB_ROLES"]["TestRole"]:
+            assert pvm in public_role_resource_names
+
+        # Cleanup
+        current_app.config["PUBLIC_ROLE_LIKE"] = "Gamma"
+        security_manager.sync_role_definitions()
 
     def test_sqllab_gamma_user_schema_access_to_sqllab(self):
         session = db.session
@@ -500,33 +631,45 @@ class RolePermissionTests(SupersetTestCase):
         NEW_FLASK_GET_SQL_DBS_REQUEST = f"/api/v1/database/?q={prison.dumps(arguments)}"
         self.login(username="gamma")
         databases_json = self.client.get(NEW_FLASK_GET_SQL_DBS_REQUEST).json
-        self.assertEquals(databases_json["count"], 1)
+        self.assertEqual(databases_json["count"], 1)
         self.logout()
 
     def assert_can_read(self, view_menu, permissions_set):
-        self.assertIn(("can_list", view_menu), permissions_set)
+        if view_menu in NEW_SECURITY_CONVERGE_VIEWS:
+            self.assertIn(("can_read", view_menu), permissions_set)
+        else:
+            self.assertIn(("can_list", view_menu), permissions_set)
 
     def assert_can_write(self, view_menu, permissions_set):
-        self.assertIn(("can_add", view_menu), permissions_set)
-        self.assertIn(("can_delete", view_menu), permissions_set)
-        self.assertIn(("can_edit", view_menu), permissions_set)
+        if view_menu in NEW_SECURITY_CONVERGE_VIEWS:
+            self.assertIn(("can_write", view_menu), permissions_set)
+        else:
+            self.assertIn(("can_add", view_menu), permissions_set)
+            self.assertIn(("can_delete", view_menu), permissions_set)
+            self.assertIn(("can_edit", view_menu), permissions_set)
 
     def assert_cannot_write(self, view_menu, permissions_set):
-        self.assertNotIn(("can_add", view_menu), permissions_set)
-        self.assertNotIn(("can_delete", view_menu), permissions_set)
-        self.assertNotIn(("can_edit", view_menu), permissions_set)
-        self.assertNotIn(("can_save", view_menu), permissions_set)
+        if view_menu in NEW_SECURITY_CONVERGE_VIEWS:
+            self.assertNotIn(("can_write", view_menu), permissions_set)
+        else:
+            self.assertNotIn(("can_add", view_menu), permissions_set)
+            self.assertNotIn(("can_delete", view_menu), permissions_set)
+            self.assertNotIn(("can_edit", view_menu), permissions_set)
+            self.assertNotIn(("can_save", view_menu), permissions_set)
 
     def assert_can_all(self, view_menu, permissions_set):
         self.assert_can_read(view_menu, permissions_set)
         self.assert_can_write(view_menu, permissions_set)
 
+    def assert_can_menu(self, view_menu, permissions_set):
+        self.assertIn(("menu_access", view_menu), permissions_set)
+
     def assert_can_gamma(self, perm_set):
-        self.assert_can_read("TableModelView", perm_set)
+        self.assert_can_read("Dataset", perm_set)
 
         # make sure that user can create slices and dashboards
-        self.assert_can_all("SliceModelView", perm_set)
-        self.assert_can_all("DashboardModelView", perm_set)
+        self.assert_can_all("Dashboard", perm_set)
+        self.assert_can_all("Chart", perm_set)
 
         self.assertIn(("can_add_slices", "Superset"), perm_set)
         self.assertIn(("can_copy_dash", "Superset"), perm_set)
@@ -543,10 +686,25 @@ class RolePermissionTests(SupersetTestCase):
         self.assertIn(("can_explore", "Superset"), perm_set)
         self.assertIn(("can_explore_json", "Superset"), perm_set)
         self.assertIn(("can_userinfo", "UserDBModelView"), perm_set)
+        self.assert_can_menu("Databases", perm_set)
+        self.assert_can_menu("Datasets", perm_set)
+        self.assert_can_menu("Data", perm_set)
+        self.assert_can_menu("Charts", perm_set)
+        self.assert_can_menu("Dashboards", perm_set)
 
     def assert_can_alpha(self, perm_set):
-        self.assert_can_all("TableModelView", perm_set)
-
+        self.assert_can_all("Annotation", perm_set)
+        self.assert_can_all("CssTemplate", perm_set)
+        self.assert_can_all("Dataset", perm_set)
+        self.assert_can_read("Query", perm_set)
+        self.assert_can_read("Database", perm_set)
+        self.assertIn(("can_import_dashboards", "Superset"), perm_set)
+        self.assertIn(("can_this_form_post", "CsvToDatabaseView"), perm_set)
+        self.assertIn(("can_this_form_get", "CsvToDatabaseView"), perm_set)
+        self.assert_can_menu("Manage", perm_set)
+        self.assert_can_menu("Annotation Layers", perm_set)
+        self.assert_can_menu("CSS Templates", perm_set)
+        self.assert_can_menu("Upload a CSV", perm_set)
         self.assertIn(("all_datasource_access", "all_datasource_access"), perm_set)
 
     def assert_cannot_alpha(self, perm_set):
@@ -556,9 +714,10 @@ class RolePermissionTests(SupersetTestCase):
         self.assert_cannot_write("Queries", perm_set)
         self.assert_cannot_write("RoleModelView", perm_set)
         self.assert_cannot_write("UserDBModelView", perm_set)
+        self.assert_cannot_write("Database", perm_set)
 
     def assert_can_admin(self, perm_set):
-        self.assert_can_all("DatabaseView", perm_set)
+        self.assert_can_all("Database", perm_set)
         self.assert_can_all("RoleModelView", perm_set)
         self.assert_can_all("UserDBModelView", perm_set)
 
@@ -568,10 +727,14 @@ class RolePermissionTests(SupersetTestCase):
         self.assertIn(("can_override_role_permissions", "Superset"), perm_set)
         self.assertIn(("can_approve", "Superset"), perm_set)
 
+        self.assert_can_menu("Security", perm_set)
+        self.assert_can_menu("List Users", perm_set)
+        self.assert_can_menu("List Roles", perm_set)
+
     def test_is_admin_only(self):
         self.assertFalse(
             security_manager._is_admin_only(
-                security_manager.find_permission_view_menu("can_list", "TableModelView")
+                security_manager.find_permission_view_menu("can_read", "Dataset")
             )
         )
         self.assertFalse(
@@ -582,13 +745,11 @@ class RolePermissionTests(SupersetTestCase):
             )
         )
 
-        log_permissions = ["can_list", "can_show"]
+        log_permissions = ["can_read"]
         for log_permission in log_permissions:
             self.assertTrue(
                 security_manager._is_admin_only(
-                    security_manager.find_permission_view_menu(
-                        log_permission, "LogModelView"
-                    )
+                    security_manager.find_permission_view_menu(log_permission, "Log")
                 )
             )
 
@@ -619,15 +780,13 @@ class RolePermissionTests(SupersetTestCase):
     def test_is_alpha_only(self):
         self.assertFalse(
             security_manager._is_alpha_only(
-                security_manager.find_permission_view_menu("can_list", "TableModelView")
+                security_manager.find_permission_view_menu("can_read", "Dataset")
             )
         )
 
         self.assertTrue(
             security_manager._is_alpha_only(
-                security_manager.find_permission_view_menu(
-                    "muldelete", "TableModelView"
-                )
+                security_manager.find_permission_view_menu("can_write", "Dataset")
             )
         )
         self.assertTrue(
@@ -648,13 +807,16 @@ class RolePermissionTests(SupersetTestCase):
     def test_is_gamma_pvm(self):
         self.assertTrue(
             security_manager._is_gamma_pvm(
-                security_manager.find_permission_view_menu("can_list", "TableModelView")
+                security_manager.find_permission_view_menu("can_read", "Dataset")
             )
         )
 
     def test_gamma_permissions_basic(self):
         self.assert_can_gamma(get_perm_tuples("Gamma"))
-        self.assert_cannot_alpha(get_perm_tuples("Alpha"))
+        self.assert_cannot_alpha(get_perm_tuples("Gamma"))
+
+    def test_public_permissions_basic(self):
+        self.assert_can_gamma(get_perm_tuples("Public"))
 
     @unittest.skipUnless(
         SupersetTestCase.is_module_installed("pydruid"), "pydruid not installed"
@@ -668,6 +830,7 @@ class RolePermissionTests(SupersetTestCase):
     @unittest.skipUnless(
         SupersetTestCase.is_module_installed("pydruid"), "pydruid not installed"
     )
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices")
     def test_admin_permissions(self):
         self.assert_can_gamma(get_perm_tuples("Admin"))
         self.assert_can_alpha(get_perm_tuples("Admin"))
@@ -689,34 +852,21 @@ class RolePermissionTests(SupersetTestCase):
         self.assert_cannot_alpha(granter_set)
 
     def test_gamma_permissions(self):
-        def assert_can_read(view_menu):
-            self.assertIn(("can_list", view_menu), gamma_perm_set)
-
-        def assert_can_write(view_menu):
-            self.assertIn(("can_add", view_menu), gamma_perm_set)
-            self.assertIn(("can_delete", view_menu), gamma_perm_set)
-            self.assertIn(("can_edit", view_menu), gamma_perm_set)
-
-        def assert_cannot_write(view_menu):
-            self.assertNotIn(("can_add", view_menu), gamma_perm_set)
-            self.assertNotIn(("can_delete", view_menu), gamma_perm_set)
-            self.assertNotIn(("can_edit", view_menu), gamma_perm_set)
-            self.assertNotIn(("can_save", view_menu), gamma_perm_set)
-
-        def assert_can_all(view_menu):
-            assert_can_read(view_menu)
-            assert_can_write(view_menu)
-
         gamma_perm_set = set()
         for perm in security_manager.find_role("Gamma").permissions:
             gamma_perm_set.add((perm.permission.name, perm.view_menu.name))
 
         # check read only perms
-        assert_can_read("TableModelView")
 
         # make sure that user can create slices and dashboards
-        assert_can_all("SliceModelView")
-        assert_can_all("DashboardModelView")
+        self.assert_can_all("Dashboard", gamma_perm_set)
+        self.assert_can_read("Dataset", gamma_perm_set)
+
+        # make sure that user can create slices and dashboards
+        self.assert_can_all("Chart", gamma_perm_set)
+
+        self.assert_cannot_write("UserDBModelView", gamma_perm_set)
+        self.assert_cannot_write("RoleModelView", gamma_perm_set)
 
         self.assertIn(("can_add_slices", "Superset"), gamma_perm_set)
         self.assertIn(("can_copy_dash", "Superset"), gamma_perm_set)
@@ -735,9 +885,9 @@ class RolePermissionTests(SupersetTestCase):
     def test_views_are_secured(self):
         """Preventing the addition of unsecured views without has_access decorator"""
         # These FAB views are secured in their body as opposed to by decorators
-        method_whitelist = ("action", "action_post")
+        method_allowlist = ("action", "action_post")
         # List of redirect & other benign views
-        views_whitelist = [
+        views_allowlist = [
             ["MyIndexView", "index"],
             ["UtilView", "back"],
             ["LocaleView", "index"],
@@ -758,8 +908,8 @@ class RolePermissionTests(SupersetTestCase):
                 view_class, predicate=inspect.ismethod
             ):
                 if (
-                    name not in method_whitelist
-                    and [class_name, name] not in views_whitelist
+                    name not in method_allowlist
+                    and [class_name, name] not in views_allowlist
                     and hasattr(value, "_urls")
                     and not hasattr(value, "_permission_name")
                 ):
@@ -769,118 +919,282 @@ class RolePermissionTests(SupersetTestCase):
             raise Exception(f"Some views are not secured:\n{view_str}")
 
 
-class SecurityManagerTests(SupersetTestCase):
+class TestSecurityManager(SupersetTestCase):
     """
     Testing the Security Manager.
     """
 
-    @patch("superset.security.SupersetSecurityManager.datasource_access")
-    def test_assert_datasource_permission(self, mock_datasource_access):
+    @patch("superset.security.SupersetSecurityManager.raise_for_access")
+    def test_can_access_datasource(self, mock_raise_for_access):
         datasource = self.get_datasource_mock()
 
-        # Datasource with the "datasource_access" permission.
-        mock_datasource_access.return_value = True
-        security_manager.assert_datasource_permission(datasource)
+        mock_raise_for_access.return_value = None
+        self.assertTrue(security_manager.can_access_datasource(datasource=datasource))
 
-        # Datasource without the "datasource_access" permission.
-        mock_datasource_access.return_value = False
+        mock_raise_for_access.side_effect = SupersetSecurityException(
+            SupersetError(
+                "dummy",
+                SupersetErrorType.DATASOURCE_SECURITY_ACCESS_ERROR,
+                ErrorLevel.ERROR,
+            )
+        )
+
+        self.assertFalse(security_manager.can_access_datasource(datasource=datasource))
+
+    @patch("superset.security.SupersetSecurityManager.raise_for_access")
+    def test_can_access_table(self, mock_raise_for_access):
+        database = get_example_database()
+        table = Table("bar", "foo")
+
+        mock_raise_for_access.return_value = None
+        self.assertTrue(security_manager.can_access_table(database, table))
+
+        mock_raise_for_access.side_effect = SupersetSecurityException(
+            SupersetError(
+                "dummy",
+                SupersetErrorType.TABLE_SECURITY_ACCESS_ERROR,
+                ErrorLevel.ERROR,
+            )
+        )
+
+        self.assertFalse(security_manager.can_access_table(database, table))
+
+    @patch("superset.security.SupersetSecurityManager.can_access")
+    @patch("superset.security.SupersetSecurityManager.can_access_schema")
+    def test_raise_for_access_datasource(self, mock_can_access_schema, mock_can_access):
+        datasource = self.get_datasource_mock()
+
+        mock_can_access_schema.return_value = True
+        security_manager.raise_for_access(datasource=datasource)
+
+        mock_can_access.return_value = False
+        mock_can_access_schema.return_value = False
 
         with self.assertRaises(SupersetSecurityException):
-            security_manager.assert_datasource_permission(datasource)
+            security_manager.raise_for_access(datasource=datasource)
 
-    @patch("superset.security.SupersetSecurityManager.datasource_access")
-    def test_assert_query_context_permission(self, mock_datasource_access):
-        query_context = Mock()
-        query_context.datasource = self.get_datasource_mock()
+    @patch("superset.security.SupersetSecurityManager.can_access")
+    def test_raise_for_access_query(self, mock_can_access):
+        query = Mock(
+            database=get_example_database(), schema="bar", sql="SELECT * FROM foo"
+        )
 
-        # Query context with the "datasource_access" permission.
-        mock_datasource_access.return_value = True
-        security_manager.assert_query_context_permission(query_context)
+        mock_can_access.return_value = True
+        security_manager.raise_for_access(query=query)
 
-        # Query context without the "datasource_access" permission.
-        mock_datasource_access.return_value = False
+        mock_can_access.return_value = False
 
         with self.assertRaises(SupersetSecurityException):
-            security_manager.assert_query_context_permission(query_context)
+            security_manager.raise_for_access(query=query)
 
-    @patch("superset.security.SupersetSecurityManager.datasource_access")
-    def test_assert_viz_permission(self, mock_datasource_access):
+    @patch("superset.security.SupersetSecurityManager.can_access")
+    @patch("superset.security.SupersetSecurityManager.can_access_schema")
+    def test_raise_for_access_query_context(
+        self, mock_can_access_schema, mock_can_access
+    ):
+        query_context = Mock(datasource=self.get_datasource_mock())
+
+        mock_can_access_schema.return_value = True
+        security_manager.raise_for_access(query_context=query_context)
+
+        mock_can_access.return_value = False
+        mock_can_access_schema.return_value = False
+
+        with self.assertRaises(SupersetSecurityException):
+            security_manager.raise_for_access(query_context=query_context)
+
+    @patch("superset.security.SupersetSecurityManager.can_access")
+    def test_raise_for_access_table(self, mock_can_access):
+        database = get_example_database()
+        table = Table("bar", "foo")
+
+        mock_can_access.return_value = True
+        security_manager.raise_for_access(database=database, table=table)
+
+        mock_can_access.return_value = False
+
+        with self.assertRaises(SupersetSecurityException):
+            security_manager.raise_for_access(database=database, table=table)
+
+    @patch("superset.security.SupersetSecurityManager.can_access")
+    @patch("superset.security.SupersetSecurityManager.can_access_schema")
+    def test_raise_for_access_viz(self, mock_can_access_schema, mock_can_access):
         test_viz = viz.TableViz(self.get_datasource_mock(), form_data={})
 
-        # Visualization with the "datasource_access" permission.
-        mock_datasource_access.return_value = True
-        security_manager.assert_viz_permission(test_viz)
+        mock_can_access_schema.return_value = True
+        security_manager.raise_for_access(viz=test_viz)
 
-        # Visualization without the "datasource_access" permission.
-        mock_datasource_access.return_value = False
+        mock_can_access.return_value = False
+        mock_can_access_schema.return_value = False
 
         with self.assertRaises(SupersetSecurityException):
-            security_manager.assert_viz_permission(test_viz)
+            security_manager.raise_for_access(viz=test_viz)
 
 
-class RowLevelSecurityTests(SupersetTestCase):
+class TestRowLevelSecurity(SupersetTestCase):
     """
     Testing Row Level Security
     """
 
     rls_entry = None
+    query_obj = dict(
+        groupby=[],
+        metrics=[],
+        filter=[],
+        is_timeseries=False,
+        columns=["value"],
+        granularity=None,
+        from_dttm=None,
+        to_dttm=None,
+        extras={},
+    )
+    NAME_AB_ROLE = "NameAB"
+    NAME_Q_ROLE = "NameQ"
+    NAMES_A_REGEX = re.compile(r"name like 'A%'")
+    NAMES_B_REGEX = re.compile(r"name like 'B%'")
+    NAMES_Q_REGEX = re.compile(r"name like 'Q%'")
+    BASE_FILTER_REGEX = re.compile(r"gender = 'boy'")
 
     def setUp(self):
         session = db.session
 
-        # Create the RowLevelSecurityFilter
-        self.rls_entry = RowLevelSecurityFilter()
-        self.rls_entry.table = (
-            session.query(SqlaTable).filter_by(table_name="birth_names").first()
+        # Create roles
+        security_manager.add_role(self.NAME_AB_ROLE)
+        security_manager.add_role(self.NAME_Q_ROLE)
+        gamma_user = security_manager.find_user(username="gamma")
+        gamma_user.roles.append(security_manager.find_role(self.NAME_AB_ROLE))
+        gamma_user.roles.append(security_manager.find_role(self.NAME_Q_ROLE))
+        self.create_user_with_roles("NoRlsRoleUser", ["Gamma"])
+        session.commit()
+
+        # Create regular RowLevelSecurityFilter (energy_usage, unicode_test)
+        self.rls_entry1 = RowLevelSecurityFilter()
+        self.rls_entry1.tables.extend(
+            session.query(SqlaTable)
+            .filter(SqlaTable.table_name.in_(["energy_usage", "unicode_test"]))
+            .all()
         )
-        self.rls_entry.clause = "gender = 'male'"
-        self.rls_entry.roles.append(
-            security_manager.find_role("Gamma")
-        )  # db.session.query(Role).filter_by(name="Gamma").first())
-        db.session.add(self.rls_entry)
+        self.rls_entry1.filter_type = "Regular"
+        self.rls_entry1.clause = "value > {{ cache_key_wrapper(1) }}"
+        self.rls_entry1.group_key = None
+        self.rls_entry1.roles.append(security_manager.find_role("Gamma"))
+        self.rls_entry1.roles.append(security_manager.find_role("Alpha"))
+        db.session.add(self.rls_entry1)
+
+        # Create regular RowLevelSecurityFilter (birth_names name starts with A or B)
+        self.rls_entry2 = RowLevelSecurityFilter()
+        self.rls_entry2.tables.extend(
+            session.query(SqlaTable)
+            .filter(SqlaTable.table_name.in_(["birth_names"]))
+            .all()
+        )
+        self.rls_entry2.filter_type = "Regular"
+        self.rls_entry2.clause = "name like 'A%' or name like 'B%'"
+        self.rls_entry2.group_key = "name"
+        self.rls_entry2.roles.append(security_manager.find_role("NameAB"))
+        db.session.add(self.rls_entry2)
+
+        # Create Regular RowLevelSecurityFilter (birth_names name starts with Q)
+        self.rls_entry3 = RowLevelSecurityFilter()
+        self.rls_entry3.tables.extend(
+            session.query(SqlaTable)
+            .filter(SqlaTable.table_name.in_(["birth_names"]))
+            .all()
+        )
+        self.rls_entry3.filter_type = "Regular"
+        self.rls_entry3.clause = "name like 'Q%'"
+        self.rls_entry3.group_key = "name"
+        self.rls_entry3.roles.append(security_manager.find_role("NameQ"))
+        db.session.add(self.rls_entry3)
+
+        # Create Base RowLevelSecurityFilter (birth_names boys)
+        self.rls_entry4 = RowLevelSecurityFilter()
+        self.rls_entry4.tables.extend(
+            session.query(SqlaTable)
+            .filter(SqlaTable.table_name.in_(["birth_names"]))
+            .all()
+        )
+        self.rls_entry4.filter_type = "Base"
+        self.rls_entry4.clause = "gender = 'boy'"
+        self.rls_entry4.group_key = "gender"
+        self.rls_entry4.roles.append(security_manager.find_role("Admin"))
+        db.session.add(self.rls_entry4)
 
         db.session.commit()
 
     def tearDown(self):
         session = db.session
-        session.delete(self.rls_entry)
+        session.delete(self.rls_entry1)
+        session.delete(self.rls_entry2)
+        session.delete(self.rls_entry3)
+        session.delete(self.rls_entry4)
+        session.delete(security_manager.find_role("NameAB"))
+        session.delete(security_manager.find_role("NameQ"))
+        session.delete(self.get_user("NoRlsRoleUser"))
         session.commit()
 
-    # Do another test to make sure it doesn't alter another query
-    def test_rls_filter_alters_query(self):
-        g.user = self.get_user(
-            username="gamma"
-        )  # self.login() doesn't actually set the user
-        tbl = self.get_table_by_name("birth_names")
-        query_obj = dict(
-            groupby=[],
-            metrics=[],
-            filter=[],
-            is_timeseries=False,
-            columns=["name"],
-            granularity=None,
-            from_dttm=None,
-            to_dttm=None,
-            extras={},
-        )
-        sql = tbl.get_query_str(query_obj)
-        self.assertIn("gender = 'male'", sql)
+    @pytest.mark.usefixtures("load_energy_table_with_slice")
+    def test_rls_filter_alters_energy_query(self):
+        g.user = self.get_user(username="alpha")
+        tbl = self.get_table_by_name("energy_usage")
+        sql = tbl.get_query_str(self.query_obj)
+        assert tbl.get_extra_cache_keys(self.query_obj) == [1]
+        assert "value > 1" in sql
 
-    def test_rls_filter_doesnt_alter_query(self):
+    @pytest.mark.usefixtures("load_energy_table_with_slice")
+    def test_rls_filter_doesnt_alter_energy_query(self):
         g.user = self.get_user(
             username="admin"
         )  # self.login() doesn't actually set the user
+        tbl = self.get_table_by_name("energy_usage")
+        sql = tbl.get_query_str(self.query_obj)
+        assert tbl.get_extra_cache_keys(self.query_obj) == []
+        assert "value > 1" not in sql
+
+    @pytest.mark.usefixtures("load_unicode_dashboard_with_slice")
+    def test_multiple_table_filter_alters_another_tables_query(self):
+        g.user = self.get_user(
+            username="alpha"
+        )  # self.login() doesn't actually set the user
+        tbl = self.get_table_by_name("unicode_test")
+        sql = tbl.get_query_str(self.query_obj)
+        assert tbl.get_extra_cache_keys(self.query_obj) == [1]
+        assert "value > 1" in sql
+
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
+    def test_rls_filter_alters_gamma_birth_names_query(self):
+        g.user = self.get_user(username="gamma")
         tbl = self.get_table_by_name("birth_names")
-        query_obj = dict(
-            groupby=[],
-            metrics=[],
-            filter=[],
-            is_timeseries=False,
-            columns=["name"],
-            granularity=None,
-            from_dttm=None,
-            to_dttm=None,
-            extras={},
+        sql = tbl.get_query_str(self.query_obj)
+
+        # establish that the filters are grouped together correctly with
+        # ANDs, ORs and parens in the correct place
+        assert (
+            "WHERE ((name like 'A%'\n        or name like 'B%')\n       OR (name like 'Q%'))\n  AND (gender = 'boy');"
+            in sql
         )
-        sql = tbl.get_query_str(query_obj)
-        self.assertNotIn("gender = 'male'", sql)
+
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
+    def test_rls_filter_alters_no_role_user_birth_names_query(self):
+        g.user = self.get_user(username="NoRlsRoleUser")
+        tbl = self.get_table_by_name("birth_names")
+        sql = tbl.get_query_str(self.query_obj)
+
+        # gamma's filters should not be present query
+        assert not self.NAMES_A_REGEX.search(sql)
+        assert not self.NAMES_B_REGEX.search(sql)
+        assert not self.NAMES_Q_REGEX.search(sql)
+        # base query should be present
+        assert self.BASE_FILTER_REGEX.search(sql)
+
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
+    def test_rls_filter_doesnt_alter_admin_birth_names_query(self):
+        g.user = self.get_user(username="admin")
+        tbl = self.get_table_by_name("birth_names")
+        sql = tbl.get_query_str(self.query_obj)
+
+        # no filters are applied for admin user
+        assert not self.NAMES_A_REGEX.search(sql)
+        assert not self.NAMES_B_REGEX.search(sql)
+        assert not self.NAMES_Q_REGEX.search(sql)
+        assert not self.BASE_FILTER_REGEX.search(sql)

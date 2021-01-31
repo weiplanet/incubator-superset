@@ -22,9 +22,10 @@ import charts from '../../chart/chartReducer';
 import dashboardInfo from './dashboardInfo';
 import dashboardState from './dashboardState';
 import dashboardFilters from './dashboardFilters';
+import nativeFilters from './nativeFilters';
 import datasources from './datasources';
 import sliceEntities from './sliceEntities';
-import dashboardLayout from '../reducers/undoableDashboardLayout';
+import dashboardLayout from './undoableDashboardLayout';
 import messageToasts from '../../messageToasts/reducers';
 
 const impressionId = (state = '') => state;
@@ -34,6 +35,7 @@ export default combineReducers({
   datasources,
   dashboardInfo,
   dashboardFilters,
+  nativeFilters,
   dashboardState,
   dashboardLayout,
   impressionId,

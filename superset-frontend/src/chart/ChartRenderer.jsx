@@ -16,11 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import dompurify from 'dompurify';
 import { snakeCase } from 'lodash';
 import PropTypes from 'prop-types';
 import React from 'react';
-import { SuperChart } from '@superset-ui/chart';
+import { SuperChart, logging } from '@superset-ui/core';
 import { Logger, LOG_ACTIONS_RENDER_CHART } from '../logger/LogUtils';
 
 const propTypes = {
@@ -38,7 +37,7 @@ const propTypes = {
   // state
   chartAlert: PropTypes.string,
   chartStatus: PropTypes.string,
-  queryResponse: PropTypes.object,
+  queriesResponse: PropTypes.arrayOf(PropTypes.object),
   triggerQuery: PropTypes.bool,
   refreshOverlayVisible: PropTypes.bool,
   // dashboard callbacks
@@ -79,16 +78,15 @@ class ChartRenderer extends React.Component {
 
   shouldComponentUpdate(nextProps) {
     const resultsReady =
-      nextProps.queryResponse &&
+      nextProps.queriesResponse &&
       ['success', 'rendered'].indexOf(nextProps.chartStatus) > -1 &&
-      !nextProps.queryResponse.error &&
+      !nextProps.queriesResponse?.[0]?.error &&
       !nextProps.refreshOverlayVisible;
 
     if (resultsReady) {
       this.hasQueryResponseChange =
-        nextProps.queryResponse !== this.props.queryResponse;
-
-      if (
+        nextProps.queriesResponse !== this.props.queriesResponse;
+      return (
         this.hasQueryResponseChange ||
         nextProps.annotationData !== this.props.annotationData ||
         nextProps.height !== this.props.height ||
@@ -96,9 +94,7 @@ class ChartRenderer extends React.Component {
         nextProps.triggerRender ||
         nextProps.formData.color_scheme !== this.props.formData.color_scheme ||
         nextProps.cacheBusterProp !== this.props.cacheBusterProp
-      ) {
-        return true;
-      }
+      );
     }
     return false;
   }
@@ -128,7 +124,7 @@ class ChartRenderer extends React.Component {
 
   handleRenderFailure(error, info) {
     const { actions, chartId } = this.props;
-    console.warn(error); // eslint-disable-line
+    logging.warn(error);
     actions.chartRenderingFailed(
       error.toString(),
       chartId,
@@ -183,7 +179,7 @@ class ChartRenderer extends React.Component {
       datasource,
       initialValues,
       formData,
-      queryResponse,
+      queriesResponse,
     } = this.props;
 
     // It's bad practice to use unprefixed `vizType` as classnames for chart
@@ -196,12 +192,22 @@ class ChartRenderer extends React.Component {
         ? `superset-chart-${snakeCaseVizType}`
         : snakeCaseVizType;
 
+    const webpackHash =
+      process.env.WEBPACK_MODE === 'development'
+        ? `-${
+            // eslint-disable-next-line camelcase
+            typeof __webpack_require__ !== 'undefined' &&
+            // eslint-disable-next-line camelcase, no-undef
+            typeof __webpack_require__.h === 'function' &&
+            // eslint-disable-next-line no-undef
+            __webpack_require__.h()
+          }`
+        : '';
+
     return (
       <SuperChart
         disableErrorBoundary
-        key={`${chartId}${
-          process.env.WEBPACK_MODE === 'development' ? `-${Date.now()}` : ''
-        }`}
+        key={`${chartId}${webpackHash}`}
         id={`chart-id-${chartId}`}
         className={chartClassName}
         chartType={vizType}
@@ -212,7 +218,7 @@ class ChartRenderer extends React.Component {
         initialValues={initialValues}
         formData={formData}
         hooks={this.hooks}
-        queryData={queryResponse}
+        queriesData={queriesResponse}
         onRenderSuccess={this.handleRenderSuccess}
         onRenderFailure={this.handleRenderFailure}
       />

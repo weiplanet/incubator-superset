@@ -42,8 +42,9 @@ module.exports = {
   plugins: [
     'lodash',
     '@babel/plugin-syntax-dynamic-import',
-    '@babel/plugin-proposal-class-properties',
-    '@babel/plugin-proposal-optional-chaining',
+    ['@babel/plugin-proposal-class-properties', { loose: true }],
+    ['@babel/plugin-proposal-optional-chaining', { loose: true }],
+    ['@babel/plugin-proposal-private-methods', { loose: true }],
     ['@babel/plugin-transform-runtime', { corejs: 3 }],
     'react-hot-loader/babel',
   ],
@@ -64,6 +65,20 @@ module.exports = {
         ],
       ],
       plugins: ['babel-plugin-dynamic-import-node'],
+    },
+    // build instrumented code for testing code coverage with Cypress
+    instrumented: {
+      plugins: ['istanbul'],
+    },
+    production: {
+      plugins: [
+        [
+          'babel-plugin-jsx-remove-data-test-id',
+          {
+            attributes: 'data-test',
+          },
+        ],
+      ],
     },
   },
 };

@@ -18,36 +18,32 @@
  */
 import React from 'react';
 import { shallow } from 'enzyme';
-import { Table } from 'reactable-arc';
-
+import QueryTable from 'src/SqlLab/components/QueryTable';
+import TableView from 'src/components/TableView';
+import { TableCollection } from 'src/components/dataViewCommon';
 import { queries } from './fixtures';
-import QueryTable from '../../../src/SqlLab/components/QueryTable';
 
 describe('QueryTable', () => {
   const mockedProps = {
     queries,
+    displayLimit: 100,
   };
   it('is valid', () => {
-    expect(React.isValidElement(<QueryTable />)).toBe(true);
+    expect(React.isValidElement(<QueryTable displayLimit={100} />)).toBe(true);
   });
   it('is valid with props', () => {
     expect(React.isValidElement(<QueryTable {...mockedProps} />)).toBe(true);
   });
   it('renders a proper table', () => {
     const wrapper = shallow(<QueryTable {...mockedProps} />);
-    expect(wrapper.find(Table)).toHaveLength(1);
-    expect(
-      wrapper
-        .find(Table)
-        .shallow()
-        .find('table'),
-    ).toHaveLength(1);
-    expect(
-      wrapper
-        .find(Table)
-        .shallow()
-        .find('table')
-        .find('Tr'),
-    ).toHaveLength(2);
+    const tableWrapper = wrapper
+      .find(TableView)
+      .shallow()
+      .find(TableCollection)
+      .shallow();
+    expect(wrapper.find(TableView)).toExist();
+    expect(tableWrapper.find('table')).toExist();
+    expect(tableWrapper.find('table').find('thead').find('tr')).toHaveLength(1);
+    expect(tableWrapper.find('table').find('tbody').find('tr')).toHaveLength(2);
   });
 });

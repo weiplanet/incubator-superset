@@ -14,15 +14,18 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+from sqlalchemy.engine.url import URL
+
+from superset.exceptions import SupersetException
 
 
-class DBSecurityException(Exception):
-    """ Exception to prevent a security issue with connecting a DB """
+class DBSecurityException(SupersetException):
+    """ Exception to prevent a security issue with connecting to a DB """
 
     status = 400
 
 
-def check_sqlalchemy_uri(uri):
+def check_sqlalchemy_uri(uri: URL) -> None:
     if uri.startswith("sqlite"):
         # sqlite creates a local DB, which allows mapping server's filesystem
         raise DBSecurityException(

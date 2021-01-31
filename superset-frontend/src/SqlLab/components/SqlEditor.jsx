@@ -16,34 +16,58 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+/* eslint-disable jsx-a11y/anchor-is-valid */
+/* eslint-disable jsx-a11y/no-static-element-interactions */
 import React from 'react';
 import { CSSTransition } from 'react-transition-group';
+import { connect } from 'react-redux';
+import { bindActionCreators } from 'redux';
 import PropTypes from 'prop-types';
-import {
-  Checkbox,
-  FormGroup,
-  InputGroup,
-  Form,
-  FormControl,
-  Label,
-  OverlayTrigger,
-  Tooltip,
-} from 'react-bootstrap';
+import { Form } from 'react-bootstrap';
 import Split from 'react-split';
-import { t } from '@superset-ui/translation';
+import { t, styled, supersetTheme } from '@superset-ui/core';
 import debounce from 'lodash/debounce';
 import throttle from 'lodash/throttle';
+import StyledModal from 'src/common/components/Modal';
+import Mousetrap from 'mousetrap';
 
-import Button from '../../components/Button';
-import LimitControl from './LimitControl';
+import { Tooltip } from 'src/common/components/Tooltip';
+import Label from 'src/components/Label';
+import Button from 'src/components/Button';
+import Timer from 'src/components/Timer';
+import {
+  Dropdown,
+  Menu as AntdMenu,
+  Menu,
+  Switch,
+  Input,
+} from 'src/common/components';
+import Icon from 'src/components/Icon';
+import { detectOS } from 'src/utils/common';
+import {
+  addQueryEditor,
+  CtasEnum,
+  estimateQueryCost,
+  persistEditorHeight,
+  postStopQuery,
+  queryEditorSetAutorun,
+  queryEditorSetQueryLimit,
+  queryEditorSetSql,
+  queryEditorSetTemplateParams,
+  runQuery,
+  saveQuery,
+  scheduleQuery,
+  setActiveSouthPaneTab,
+  updateSavedQuery,
+  validateQuery,
+} from '../actions/sqlLab';
+
 import TemplateParamsEditor from './TemplateParamsEditor';
-import SouthPane from './SouthPane';
+import ConnectedSouthPane from './SouthPane';
 import SaveQuery from './SaveQuery';
 import ScheduleQueryButton from './ScheduleQueryButton';
 import EstimateQueryCostButton from './EstimateQueryCostButton';
 import ShareSqlLabQuery from './ShareSqlLabQuery';
-import Timer from '../../components/Timer';
-import Hotkeys from '../../components/Hotkeys';
 import SqlEditorLeftBar from './SqlEditorLeftBar';
 import AceEditorWrapper from './AceEditorWrapper';
 import {
@@ -55,12 +79,58 @@ import {
 import RunQueryActionButton from './RunQueryActionButton';
 import { FeatureFlag, isFeatureEnabled } from '../../featureFlags';
 
+const LIMIT_DROPDOWN = [10, 100, 1000, 10000, 100000];
 const SQL_EDITOR_PADDING = 10;
 const INITIAL_NORTH_PERCENT = 30;
 const INITIAL_SOUTH_PERCENT = 70;
 const SET_QUERY_EDITOR_SQL_DEBOUNCE_MS = 2000;
 const VALIDATION_DEBOUNCE_MS = 600;
 const WINDOW_RESIZE_THROTTLE_MS = 100;
+
+const LimitSelectStyled = styled.span`
+  .ant-dropdown-trigger {
+    align-items: center;
+    color: black;
+    display: flex;
+    font-size: 12px;
+    margin-right: ${({ theme }) => theme.gridUnit * 2}px;
+    text-decoration: none;
+    span {
+      display: inline-block;
+      margin-right: ${({ theme }) => theme.gridUnit * 2}px;
+      &:last-of-type: {
+        margin-right: ${({ theme }) => theme.gridUnit * 4}px;
+      }
+    }
+  }
+`;
+
+const StyledToolbar = styled.div`
+  padding: ${({ theme }) => theme.gridUnit * 2}px;
+  background-color: @lightest;
+  display: flex;
+  justify-content: space-between;
+  border: 1px solid ${supersetTheme.colors.grayscale.light2};
+  border-top: 0;
+
+  form {
+    margin-block-end: 0;
+  }
+
+  .leftItems form,
+  .rightItems {
+    display: flex;
+    align-items: center;
+    & > span {
+      margin-right: ${({ theme }) => theme.gridUnit * 2}px;
+      display: inline-block;
+
+      &:last-child {
+        margin-right: 0;
+      }
+    }
+  }
+`;
 
 const propTypes = {
   actions: PropTypes.object.isRequired,
@@ -69,7 +139,7 @@ const propTypes = {
   tables: PropTypes.array.isRequired,
   editorQueries: PropTypes.array.isRequired,
   dataPreviewQueries: PropTypes.array.isRequired,
-  queryEditor: PropTypes.object.isRequired,
+  queryEditorId: PropTypes.string.isRequired,
   hideLeftBar: PropTypes.bool,
   defaultQueryLimit: PropTypes.number.isRequired,
   maxRow: PropTypes.number.isRequired,
@@ -95,6 +165,8 @@ class SqlEditor extends React.PureComponent {
       southPercent: props.queryEditor.southPercent || INITIAL_SOUTH_PERCENT,
       sql: props.queryEditor.sql,
       autocompleteEnabled: true,
+      showCreateAsModal: false,
+      createAs: '',
     };
     this.sqlEditorRef = React.createRef();
     this.northPaneRef = React.createRef();
@@ -112,6 +184,7 @@ class SqlEditor extends React.PureComponent {
       SET_QUERY_EDITOR_SQL_DEBOUNCE_MS,
     );
     this.queryPane = this.queryPane.bind(this);
+    this.renderQueryLimit = this.renderQueryLimit.bind(this);
     this.getAceEditorAndSouthPaneHeights = this.getAceEditorAndSouthPaneHeights.bind(
       this,
     );
@@ -125,14 +198,18 @@ class SqlEditor extends React.PureComponent {
       this.handleWindowResize.bind(this),
       WINDOW_RESIZE_THROTTLE_MS,
     );
+
+    this.renderDropdown = this.renderDropdown.bind(this);
   }
+
   UNSAFE_componentWillMount() {
     if (this.state.autorun) {
       this.setState({ autorun: false });
-      this.props.actions.queryEditorSetAutorun(this.props.queryEditor, false);
+      this.props.queryEditorSetAutorun(this.props.queryEditor, false);
       this.startQuery();
     }
   }
+
   componentDidMount() {
     // We need to measure the height of the sql editor post render to figure the height of
     // the south pane so it gets rendered properly
@@ -140,26 +217,36 @@ class SqlEditor extends React.PureComponent {
     this.setState({ height: this.getSqlEditorHeight() });
 
     window.addEventListener('resize', this.handleWindowResize);
+
+    // setup hotkeys
+    const hotkeys = this.getHotkeyConfig();
+    hotkeys.forEach(keyConfig => {
+      Mousetrap.bind([keyConfig.key], keyConfig.func);
+    });
   }
+
   componentWillUnmount() {
     window.removeEventListener('resize', this.handleWindowResize);
   }
+
   onResizeStart() {
     // Set the heights on the ace editor and the ace content area after drag starts
     // to smooth out the visual transition to the new heights when drag ends
     document.getElementsByClassName('ace_content')[0].style.height = '100%';
   }
+
   onResizeEnd([northPercent, southPercent]) {
     this.setState({ northPercent, southPercent });
 
     if (this.northPaneRef.current && this.northPaneRef.current.clientHeight) {
-      this.props.actions.persistEditorHeight(
+      this.props.persistEditorHeight(
         this.props.queryEditor,
         northPercent,
         southPercent,
       );
     }
   }
+
   onSqlChanged(sql) {
     this.setState({ sql });
     this.setQueryEditorSqlWithDebounce(sql);
@@ -169,12 +256,14 @@ class SqlEditor extends React.PureComponent {
       this.requestValidation();
     }
   }
+
   // One layer of abstraction for easy spying in unit tests
   getSqlEditorHeight() {
     return this.sqlEditorRef.current
       ? this.sqlEditorRef.current.clientHeight - SQL_EDITOR_PADDING * 2
       : 0;
   }
+
   // Return the heights for the ace editor and the south pane as an object
   // given the height of the sql editor, north pane percent and south pane percent.
   getAceEditorAndSouthPaneHeights(height, northPercent, southPercent) {
@@ -188,28 +277,39 @@ class SqlEditor extends React.PureComponent {
         (SQL_EDITOR_GUTTER_HEIGHT / 2 + SQL_EDITOR_GUTTER_MARGIN),
     };
   }
+
   getHotkeyConfig() {
+    // Get the user's OS
+    const userOS = detectOS();
     return [
       {
         name: 'runQuery1',
         key: 'ctrl+r',
         descr: t('Run query'),
-        func: this.runQuery,
+        func: () => {
+          if (this.state.sql.trim() !== '') {
+            this.runQuery();
+          }
+        },
       },
       {
         name: 'runQuery2',
         key: 'ctrl+enter',
         descr: t('Run query'),
-        func: this.runQuery,
+        func: () => {
+          if (this.state.sql.trim() !== '') {
+            this.runQuery();
+          }
+        },
       },
       {
         name: 'newTab',
-        key: 'ctrl+t',
+        key: userOS === 'Windows' ? 'ctrl+q' : 'ctrl+t',
         descr: t('New tab'),
         func: () => {
-          this.props.actions.addQueryEditor({
+          this.props.addQueryEditor({
             ...this.props.queryEditor,
-            title: t('Untitled Query'),
+            title: t('Untitled query'),
             sql: '',
           });
         },
@@ -222,15 +322,15 @@ class SqlEditor extends React.PureComponent {
       },
     ];
   }
+
   setQueryEditorSql(sql) {
-    this.props.actions.queryEditorSetSql(this.props.queryEditor, sql);
+    this.props.queryEditorSetSql(this.props.queryEditor, sql);
   }
+
   setQueryLimit(queryLimit) {
-    this.props.actions.queryEditorSetQueryLimit(
-      this.props.queryEditor,
-      queryLimit,
-    );
+    this.props.queryEditorSetQueryLimit(this.props.queryEditor, queryLimit);
   }
+
   getQueryCostEstimate() {
     if (this.props.database) {
       const qe = this.props.queryEditor;
@@ -241,21 +341,28 @@ class SqlEditor extends React.PureComponent {
         schema: qe.schema,
         templateParams: qe.templateParams,
       };
-      this.props.actions.estimateQueryCost(query);
+      this.props.estimateQueryCost(query);
     }
   }
+
+  handleToggleAutocompleteEnabled = () => {
+    this.setState(prevState => ({
+      autocompleteEnabled: !prevState.autocompleteEnabled,
+    }));
+  };
+
   handleWindowResize() {
     this.setState({ height: this.getSqlEditorHeight() });
   }
-  handleToggleAutocompleteEnabled = () => {
-    this.setState({ autocompleteEnabled: !this.state.autocompleteEnabled });
-  };
+
   elementStyle(dimension, elementSize, gutterSize) {
     return {
-      [dimension]: `calc(${elementSize}% - ${gutterSize +
-        SQL_EDITOR_GUTTER_MARGIN}px)`,
+      [dimension]: `calc(${elementSize}% - ${
+        gutterSize + SQL_EDITOR_GUTTER_MARGIN
+      }px)`,
     };
   }
+
   requestValidation() {
     if (this.props.database) {
       const qe = this.props.queryEditor;
@@ -266,9 +373,10 @@ class SqlEditor extends React.PureComponent {
         schema: qe.schema,
         templateParams: qe.templateParams,
       };
-      this.props.actions.validateQuery(query);
+      this.props.validateQuery(query);
     }
   }
+
   canValidateQuery() {
     // Check whether or not we can validate the current query based on whether
     // or not the backend has a validator configured for it.
@@ -278,12 +386,18 @@ class SqlEditor extends React.PureComponent {
     }
     return false;
   }
+
   runQuery() {
     if (this.props.database) {
       this.startQuery();
     }
   }
-  startQuery(ctas = false) {
+
+  convertToNumWithSpaces(num) {
+    return num.toString().replace(/(\d)(?=(\d{3})+(?!\d))/g, '$1 ');
+  }
+
+  startQuery(ctas = false, ctas_method = CtasEnum.TABLE) {
     const qe = this.props.queryEditor;
     const query = {
       dbId: qe.dbId,
@@ -291,32 +405,43 @@ class SqlEditor extends React.PureComponent {
       sqlEditorId: qe.id,
       tab: qe.title,
       schema: qe.schema,
-      tempTableName: ctas ? this.state.ctas : '',
+      tempTable: ctas ? this.state.ctas : '',
       templateParams: qe.templateParams,
       queryLimit: qe.queryLimit || this.props.defaultQueryLimit,
       runAsync: this.props.database
         ? this.props.database.allow_run_async
         : false,
       ctas,
+      ctas_method,
       updateTabState: !qe.selectedText,
     };
-    this.props.actions.runQuery(query);
-    this.props.actions.setActiveSouthPaneTab('Results');
+    this.props.runQuery(query);
+    this.props.setActiveSouthPaneTab('Results');
   }
+
   stopQuery() {
     if (
       this.props.latestQuery &&
       ['running', 'pending'].indexOf(this.props.latestQuery.state) >= 0
     ) {
-      this.props.actions.postStopQuery(this.props.latestQuery);
+      this.props.postStopQuery(this.props.latestQuery);
     }
   }
+
   createTableAs() {
-    this.startQuery(true);
+    this.startQuery(true, CtasEnum.TABLE);
+    this.setState({ showCreateAsModal: false, ctas: '' });
   }
+
+  createViewAs() {
+    this.startQuery(true, CtasEnum.VIEW);
+    this.setState({ showCreateAsModal: false, ctas: '' });
+  }
+
   ctasChanged(event) {
     this.setState({ ctas: event.target.value });
   }
+
   queryPane() {
     const hotkeys = this.getHotkeyConfig();
     const {
@@ -358,7 +483,7 @@ class SqlEditor extends React.PureComponent {
           />
           {this.renderEditorBottomBar(hotkeys)}
         </div>
-        <SouthPane
+        <ConnectedSouthPane
           editorQueries={this.props.editorQueries}
           latestQueryId={this.props.latestQuery && this.props.latestQuery.id}
           dataPreviewQueries={this.props.dataPreviewQueries}
@@ -369,64 +494,129 @@ class SqlEditor extends React.PureComponent {
       </Split>
     );
   }
-  renderEditorBottomBar(hotkeys) {
-    let ctasControls;
-    if (this.props.database && this.props.database.allow_ctas) {
-      const ctasToolTip = t('Create table as with query results');
-      ctasControls = (
-        <FormGroup>
-          <InputGroup>
-            <FormControl
-              type="text"
-              bsSize="small"
-              className="input-sm"
-              placeholder={t('new table name')}
-              onChange={this.ctasChanged.bind(this)}
-            />
-            <InputGroup.Button>
-              <Button
-                bsSize="small"
-                disabled={this.state.ctas.length === 0}
-                onClick={this.createTableAs.bind(this)}
-                tooltip={ctasToolTip}
-              >
-                <i className="fa fa-table" /> CTAS
-              </Button>
-            </InputGroup.Button>
-          </InputGroup>
-        </FormGroup>
-      );
-    }
+
+  renderDropdown() {
     const qe = this.props.queryEditor;
+    const successful = this.props.latestQuery?.state === 'success';
+    const scheduleToolTip = successful
+      ? t('Schedule the query periodically')
+      : t('You must run the query successfully first');
+    return (
+      <Menu onClick={this.handleMenuClick} style={{ width: 176 }}>
+        <Menu.Item style={{ display: 'flex', justifyContent: 'space-between' }}>
+          {' '}
+          <span>Autocomplete</span>{' '}
+          <Switch
+            checked={this.state.autocompleteEnabled}
+            onChange={this.handleToggleAutocompleteEnabled}
+            name="autocomplete-switch"
+          />{' '}
+        </Menu.Item>
+        {isFeatureEnabled(FeatureFlag.ENABLE_TEMPLATE_PROCESSING) && (
+          <Menu.Item>
+            <TemplateParamsEditor
+              language="json"
+              onChange={params => {
+                this.props.actions.queryEditorSetTemplateParams(qe, params);
+              }}
+              code={qe.templateParams}
+            />
+          </Menu.Item>
+        )}
+        {isFeatureEnabled(FeatureFlag.SCHEDULED_QUERIES) && (
+          <Menu.Item>
+            <ScheduleQueryButton
+              defaultLabel={qe.title}
+              sql={qe.sql}
+              onSchedule={this.props.actions.scheduleQuery}
+              schema={qe.schema}
+              dbId={qe.dbId}
+              scheduleQueryWarning={this.props.scheduleQueryWarning}
+              tooltip={scheduleToolTip}
+              disabled={!successful}
+            />
+          </Menu.Item>
+        )}
+      </Menu>
+    );
+  }
+
+  renderQueryLimit() {
+    // Adding SQL_MAX_ROW value to dropdown
+    const { maxRow } = this.props;
+    LIMIT_DROPDOWN.push(maxRow);
+
+    return (
+      <AntdMenu>
+        {[...new Set(LIMIT_DROPDOWN)].map(limit => (
+          <AntdMenu.Item onClick={() => this.setQueryLimit(limit)}>
+            {/* // eslint-disable-line no-use-before-define */}
+            <a role="button" styling="link">
+              {this.convertToNumWithSpaces(limit)}
+            </a>{' '}
+          </AntdMenu.Item>
+        ))}
+      </AntdMenu>
+    );
+  }
+
+  renderEditorBottomBar() {
+    const { queryEditor: qe } = this.props;
     let limitWarning = null;
-    if (
-      this.props.latestQuery &&
-      this.props.latestQuery.results &&
-      this.props.latestQuery.results.displayLimitReached
-    ) {
-      const tooltip = (
-        <Tooltip id="tooltip">
-          {t(
+    if (this.props.latestQuery?.results?.displayLimitReached) {
+      limitWarning = (
+        <Tooltip
+          id="tooltip"
+          placement="left"
+          title={t(
             `It appears that the number of rows in the query results displayed
            was limited on the server side to
            the %s limit.`,
             this.props.latestQuery.rows,
           )}
+        >
+          <Label bsStyle="warning">LIMIT</Label>
         </Tooltip>
       );
-      limitWarning = (
-        <OverlayTrigger placement="left" overlay={tooltip}>
-          <Label bsStyle="warning">LIMIT</Label>
-        </OverlayTrigger>
-      );
     }
-    const successful =
-      this.props.latestQuery && this.props.latestQuery.state === 'success';
-    const scheduleToolTip = successful
-      ? t('Schedule the query periodically')
-      : t('You must run the query successfully first');
+
+    const { allow_ctas: allowCTAS, allow_cvas: allowCVAS } =
+      this.props.database || {};
+
+    const showMenu = allowCTAS || allowCVAS;
+
+    const runMenuBtn = (
+      <Menu>
+        {allowCTAS && (
+          <Menu.Item
+            onClick={() => {
+              this.setState({
+                showCreateAsModal: true,
+                createAs: CtasEnum.TABLE,
+              });
+            }}
+            key="1"
+          >
+            {t('CREATE TABLE AS')}
+          </Menu.Item>
+        )}
+        {allowCVAS && (
+          <Menu.Item
+            onClick={() => {
+              this.setState({
+                showCreateAsModal: true,
+                createAs: CtasEnum.VIEW,
+              });
+            }}
+            key="2"
+          >
+            {t('CREATE VIEW AS')}
+          </Menu.Item>
+        )}
+      </Menu>
+    );
     return (
-      <div className="sql-toolbar" id="js-sql-toolbar">
+      <StyledToolbar className="sql-toolbar" id="js-sql-toolbar">
         <div className="leftItems">
           <Form inline>
             <span>
@@ -436,14 +626,12 @@ class SqlEditor extends React.PureComponent {
                     ? this.props.database.allow_run_async
                     : false
                 }
-                dbId={qe.dbId}
-                queryState={
-                  this.props.latestQuery && this.props.latestQuery.state
-                }
+                queryState={this.props.latestQuery?.state}
                 runQuery={this.runQuery}
                 selectedText={qe.selectedText}
                 stopQuery={this.stopQuery}
                 sql={this.state.sql}
+                overlayCreateAsMenu={showMenu ? runMenuBtn : null}
               />
             </span>
             {isFeatureEnabled(FeatureFlag.ESTIMATE_QUERY_COST) &&
@@ -461,84 +649,66 @@ class SqlEditor extends React.PureComponent {
                   />
                 </span>
               )}
-            {isFeatureEnabled(FeatureFlag.SCHEDULED_QUERIES) && (
-              <span>
-                <ScheduleQueryButton
-                  defaultLabel={qe.title}
-                  sql={qe.sql}
-                  onSchedule={this.props.actions.scheduleQuery}
-                  schema={qe.schema}
-                  dbId={qe.dbId}
-                  scheduleQueryWarning={this.props.scheduleQueryWarning}
-                  tooltip={scheduleToolTip}
-                  disabled={!successful}
-                />
-              </span>
+            {limitWarning}
+            <span>
+              <LimitSelectStyled>
+                <Dropdown overlay={this.renderQueryLimit()} trigger="click">
+                  <a onClick={e => e.preventDefault()}>
+                    <span>LIMIT:</span>
+                    <span>
+                      {this.convertToNumWithSpaces(
+                        this.props.queryEditor.queryLimit ||
+                          this.props.defaultQueryLimit,
+                      )}
+                    </span>
+                    <Icon name="triangle-down" />
+                  </a>
+                </Dropdown>
+              </LimitSelectStyled>
+            </span>
+            {this.props.latestQuery && (
+              <Timer
+                startTime={this.props.latestQuery.startDttm}
+                endTime={this.props.latestQuery.endDttm}
+                state={STATE_BSSTYLE_MAP[this.props.latestQuery.state]}
+                isRunning={this.props.latestQuery.state === 'running'}
+              />
             )}
-            <span>
-              <SaveQuery
-                query={qe}
-                defaultLabel={
-                  qe.description == null ? qe.title : qe.description
-                }
-                onSave={this.props.actions.saveQuery}
-                onUpdate={this.props.actions.updateSavedQuery}
-                saveQueryWarning={this.props.saveQueryWarning}
-              />
-            </span>
-            <span>
-              <ShareSqlLabQuery queryEditor={qe} />
-            </span>
-            {ctasControls && <span>{ctasControls}</span>}
-            <span>
-              <LimitControl
-                value={
-                  this.props.queryEditor.queryLimit !== undefined
-                    ? this.props.queryEditor.queryLimit
-                    : this.props.defaultQueryLimit
-                }
-                defaultQueryLimit={this.props.defaultQueryLimit}
-                maxRow={this.props.maxRow}
-                onChange={this.setQueryLimit.bind(this)}
-              />
-            </span>
-            <span>
-              <Hotkeys header={t('Keyboard shortcuts')} hotkeys={hotkeys} />
-            </span>
           </Form>
         </div>
         <div className="rightItems">
           <span>
-            <Checkbox
-              checked={this.state.autocompleteEnabled}
-              inline
-              title={t('Autocomplete')}
-              onChange={this.handleToggleAutocompleteEnabled}
-            >
-              {t('Autocomplete')}
-            </Checkbox>
-          </span>
-          <TemplateParamsEditor
-            language="json"
-            onChange={params => {
-              this.props.actions.queryEditorSetTemplateParams(qe, params);
-            }}
-            code={qe.templateParams}
-          />
-          {limitWarning}
-          {this.props.latestQuery && (
-            <Timer
-              startTime={this.props.latestQuery.startDttm}
-              endTime={this.props.latestQuery.endDttm}
-              state={STATE_BSSTYLE_MAP[this.props.latestQuery.state]}
-              isRunning={this.props.latestQuery.state === 'running'}
+            <SaveQuery
+              query={qe}
+              defaultLabel={qe.title || qe.description}
+              onSave={this.props.actions.saveQuery}
+              onUpdate={this.props.actions.updateSavedQuery}
+              saveQueryWarning={this.props.saveQueryWarning}
             />
-          )}
+          </span>
+          <span>
+            <ShareSqlLabQuery queryEditor={qe} />
+          </span>
+          {limitWarning}
+          <Dropdown overlay={this.renderDropdown()} trigger="click">
+            <Icon name="more-horiz" />
+          </Dropdown>
         </div>
-      </div>
+      </StyledToolbar>
     );
   }
+
   render() {
+    const createViewModalTitle =
+      this.state.createAs === CtasEnum.VIEW
+        ? 'CREATE VIEW AS'
+        : 'CREATE TABLE AS';
+
+    const createModalPlaceHolder =
+      this.state.createAs === CtasEnum.VIEW
+        ? 'Specify name to CREATE VIEW AS schema in: public'
+        : 'Specify name to CREATE TABLE AS schema in: public';
+
     return (
       <div ref={this.sqlEditorRef} className="SqlEditor">
         <CSSTransition
@@ -556,6 +726,46 @@ class SqlEditor extends React.PureComponent {
           </div>
         </CSSTransition>
         {this.queryPane()}
+        <StyledModal
+          visible={this.state.showCreateAsModal}
+          title={t(createViewModalTitle)}
+          onHide={() => {
+            this.setState({ showCreateAsModal: false });
+          }}
+          footer={
+            <>
+              <Button
+                onClick={() => this.setState({ showCreateAsModal: false })}
+              >
+                Cancel
+              </Button>
+              {this.state.createAs === CtasEnum.TABLE && (
+                <Button
+                  buttonStyle="primary"
+                  disabled={this.state.ctas.length === 0}
+                  onClick={this.createTableAs.bind(this)}
+                >
+                  Create
+                </Button>
+              )}
+              {this.state.createAs === CtasEnum.VIEW && (
+                <Button
+                  buttonStyle="primary"
+                  disabled={this.state.ctas.length === 0}
+                  onClick={this.createViewAs.bind(this)}
+                >
+                  Create
+                </Button>
+              )}
+            </>
+          }
+        >
+          <span>Name</span>
+          <Input
+            placeholder={createModalPlaceHolder}
+            onChange={this.ctasChanged.bind(this)}
+          />
+        </StyledModal>
       </div>
     );
   }
@@ -563,4 +773,35 @@ class SqlEditor extends React.PureComponent {
 SqlEditor.defaultProps = defaultProps;
 SqlEditor.propTypes = propTypes;
 
-export default SqlEditor;
+function mapStateToProps(state, props) {
+  const { sqlLab } = state;
+  const queryEditor = sqlLab.queryEditors.find(
+    editor => editor.id === props.queryEditorId,
+  );
+
+  return { sqlLab, ...props, queryEditor };
+}
+
+function mapDispatchToProps(dispatch) {
+  return bindActionCreators(
+    {
+      addQueryEditor,
+      estimateQueryCost,
+      persistEditorHeight,
+      postStopQuery,
+      queryEditorSetAutorun,
+      queryEditorSetQueryLimit,
+      queryEditorSetSql,
+      queryEditorSetTemplateParams,
+      runQuery,
+      saveQuery,
+      scheduleQuery,
+      setActiveSouthPaneTab,
+      updateSavedQuery,
+      validateQuery,
+    },
+    dispatch,
+  );
+}
+
+export default connect(mapStateToProps, mapDispatchToProps)(SqlEditor);

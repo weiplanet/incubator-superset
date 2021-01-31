@@ -16,14 +16,16 @@
 # under the License.
 import json
 import textwrap
-from typing import Dict, Union
+from typing import Dict, List, Tuple, Union
 
 import pandas as pd
 from sqlalchemy import DateTime, String
 from sqlalchemy.sql import column
 
 from superset import db, security_manager
+from superset.connectors.base.models import BaseDatasource
 from superset.connectors.sqla.models import SqlMetric, TableColumn
+from superset.exceptions import NoDataException
 from superset.models.core import Database
 from superset.models.dashboard import Dashboard
 from superset.models.slice import Slice
@@ -39,6 +41,14 @@ from .helpers import (
     update_slice_ids,
 )
 
+admin = security_manager.find_user("admin")
+if admin is None:
+    raise NoDataException(
+        "Admin user does not exist. "
+        "Please, check if test users are properly loaded "
+        "(`superset load_test_users`)."
+    )
+
 
 def gen_filter(
     subject: str, comparator: str, operator: str = "=="
@@ -49,31 +59,41 @@ def gen_filter(
         "expressionType": "SIMPLE",
         "operator": operator,
         "subject": subject,
-        "fromFormData": True,
     }
 
 
-def load_data(tbl_name: str, database: Database) -> None:
-    pdf = pd.read_json(get_example_data("birth_names.json.gz"))
-    pdf.ds = pd.to_datetime(pdf.ds, unit="ms")
+def load_data(tbl_name: str, database: Database, sample: bool = False) -> None:
+    pdf = pd.read_json(get_example_data("birth_names2.json.gz"))
+    # TODO(bkyryliuk): move load examples data into the pytest fixture
+    if database.backend == "presto":
+        pdf.ds = pd.to_datetime(pdf.ds, unit="ms")
+        pdf.ds = pdf.ds.dt.strftime("%Y-%m-%d %H:%M%:%S")
+    else:
+        pdf.ds = pd.to_datetime(pdf.ds, unit="ms")
+    pdf = pdf.head(100) if sample else pdf
+
     pdf.to_sql(
         tbl_name,
         database.get_sqla_engine(),
         if_exists="replace",
         chunksize=500,
         dtype={
-            "ds": DateTime,
+            # TODO(bkyryliuk): use TIMESTAMP type for presto
+            "ds": DateTime if database.backend != "presto" else String(255),
             "gender": String(16),
             "state": String(10),
             "name": String(255),
         },
+        method="multi",
         index=False,
     )
     print("Done loading table!")
     print("-" * 80)
 
 
-def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
+def load_birth_names(
+    only_metadata: bool = False, force: bool = False, sample: bool = False
+) -> None:
     """Loading birth name dataset from a zip file in the repo"""
     # pylint: disable=too-many-locals
     tbl_name = "birth_names"
@@ -81,35 +101,56 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
     table_exists = database.has_table_by_name(tbl_name)
 
     if not only_metadata and (not table_exists or force):
-        load_data(tbl_name, database)
+        load_data(tbl_name, database, sample=sample)
 
     obj = db.session.query(TBL).filter_by(table_name=tbl_name).first()
     if not obj:
         print(f"Creating table [{tbl_name}] reference")
         obj = TBL(table_name=tbl_name)
         db.session.add(obj)
-    obj.main_dttm_col = "ds"
-    obj.database = database
-    obj.filter_select_enabled = True
 
-    if not any(col.column_name == "num_california" for col in obj.columns):
+    _set_table_metadata(obj, database)
+    _add_table_metrics(obj)
+
+    db.session.commit()
+
+    slices, _ = create_slices(obj, admin_owner=True)
+    create_dashboard(slices)
+
+
+def _set_table_metadata(datasource: "BaseDatasource", database: "Database") -> None:
+    datasource.main_dttm_col = "ds"  # type: ignore
+    datasource.database = database
+    datasource.filter_select_enabled = True
+    datasource.fetch_metadata()
+
+
+def _add_table_metrics(datasource: "BaseDatasource") -> None:
+    if not any(col.column_name == "num_california" for col in datasource.columns):
         col_state = str(column("state").compile(db.engine))
         col_num = str(column("num").compile(db.engine))
-        obj.columns.append(
+        datasource.columns.append(
             TableColumn(
                 column_name="num_california",
                 expression=f"CASE WHEN {col_state} = 'CA' THEN {col_num} ELSE 0 END",
             )
         )
 
-    if not any(col.metric_name == "sum__num" for col in obj.metrics):
+    if not any(col.metric_name == "sum__num" for col in datasource.metrics):
         col = str(column("num").compile(db.engine))
-        obj.metrics.append(SqlMetric(metric_name="sum__num", expression=f"SUM({col})"))
+        datasource.metrics.append(
+            SqlMetric(metric_name="sum__num", expression=f"SUM({col})")
+        )
 
-    db.session.commit()
-    obj.fetch_metadata()
-    tbl = obj
+    for col in datasource.columns:
+        if col.column_name == "ds":
+            col.is_dttm = True  # type: ignore
+            break
 
+
+def create_slices(
+    tbl: BaseDatasource, admin_owner: bool
+) -> Tuple[List[Slice], List[Slice]]:
     metrics = [
         {
             "expressionType": "SIMPLE",
@@ -125,6 +166,8 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
         "compare_lag": "10",
         "compare_suffix": "o10Y",
         "limit": "25",
+        "time_range": "No filter",
+        "time_range_endpoints": ["inclusive", "exclusive"],
         "granularity_sqla": "ds",
         "groupby": [],
         "row_limit": config["ROW_LIMIT"],
@@ -134,15 +177,24 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
         "markup_type": "markdown",
     }
 
-    admin = security_manager.find_user("admin")
+    if admin_owner:
+        slice_props = dict(
+            datasource_id=tbl.id,
+            datasource_type="table",
+            owners=[admin],
+            created_by=admin,
+        )
+    else:
+        slice_props = dict(
+            datasource_id=tbl.id, datasource_type="table", owners=[], created_by=admin
+        )
 
     print("Creating some slices")
     slices = [
         Slice(
+            **slice_props,
             slice_name="Participants",
             viz_type="big_number",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 viz_type="big_number",
@@ -153,19 +205,17 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Genders",
             viz_type="pie",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults, viz_type="pie", groupby=["gender"], metric=metric
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Trends",
             viz_type="line",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 viz_type="line",
@@ -177,10 +227,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Genders by State",
             viz_type="dist_bar",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 adhoc_filters=[
@@ -189,7 +238,7 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
                         "expressionType": "SIMPLE",
                         "filterOptionName": "2745eae5",
                         "comparator": ["other"],
-                        "operator": "not in",
+                        "operator": "NOT IN",
                         "subject": "state",
                     }
                 ],
@@ -197,14 +246,14 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
                 metrics=[
                     {
                         "expressionType": "SIMPLE",
-                        "column": {"column_name": "sum_boys", "type": "BIGINT(20)"},
+                        "column": {"column_name": "num_boys", "type": "BIGINT(20)"},
                         "aggregate": "SUM",
                         "label": "Boys",
                         "optionName": "metric_11",
                     },
                     {
                         "expressionType": "SIMPLE",
-                        "column": {"column_name": "sum_girls", "type": "BIGINT(20)"},
+                        "column": {"column_name": "num_girls", "type": "BIGINT(20)"},
                         "aggregate": "SUM",
                         "label": "Girls",
                         "optionName": "metric_12",
@@ -214,10 +263,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Girls",
             viz_type="table",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 groupby=["name"],
@@ -228,10 +276,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Girl Name Cloud",
             viz_type="word_cloud",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 viz_type="word_cloud",
@@ -245,10 +292,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Boys",
             viz_type="table",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 groupby=["name"],
@@ -258,10 +304,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Boy Name Cloud",
             viz_type="word_cloud",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 viz_type="word_cloud",
@@ -275,10 +320,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Top 10 Girl Name Share",
             viz_type="area",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 adhoc_filters=[gen_filter("gender", "girl")],
@@ -293,10 +337,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Top 10 Boy Name Share",
             viz_type="area",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 adhoc_filters=[gen_filter("gender", "boy")],
@@ -313,10 +356,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
     ]
     misc_slices = [
         Slice(
+            **slice_props,
             slice_name="Average and Sum Trends",
             viz_type="dual_line",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 viz_type="dual_line",
@@ -333,18 +375,15 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Num Births Trend",
             viz_type="line",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(defaults, viz_type="line", metrics=metrics),
         ),
         Slice(
+            **slice_props,
             slice_name="Daily Totals",
             viz_type="table",
-            datasource_type="table",
-            datasource_id=tbl.id,
-            created_by=admin,
             params=get_slice_json(
                 defaults,
                 groupby=["ds"],
@@ -355,10 +394,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Number of California Births",
             viz_type="big_number_total",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 metric={
@@ -375,10 +413,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Top 10 California Names Timeseries",
             viz_type="line",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 metrics=[
@@ -408,10 +445,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Names Sorted by Num in California",
             viz_type="table",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 metrics=metrics,
@@ -429,10 +465,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Number of Girls",
             viz_type="big_number_total",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 metric=metric,
@@ -443,10 +478,9 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
             ),
         ),
         Slice(
+            **slice_props,
             slice_name="Pivot Table",
             viz_type="pivot_table",
-            datasource_type="table",
-            datasource_id=tbl.id,
             params=get_slice_json(
                 defaults,
                 viz_type="pivot_table",
@@ -463,12 +497,19 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
         merge_slice(slc)
         misc_dash_slices.add(slc.slice_name)
 
-    print("Creating a dashboard")
-    dash = db.session.query(Dashboard).filter_by(slug="births").first()
+    return slices, misc_slices
 
+
+def create_dashboard(slices: List[Slice]) -> Dashboard:
+    print("Creating a dashboard")
+
+    dash = db.session.query(Dashboard).filter_by(slug="births").first()
     if not dash:
         dash = Dashboard()
+        dash.owners = [admin]
+        dash.created_by = admin
         db.session.add(dash)
+
     dash.published = True
     dash.json_metadata = textwrap.dedent(
         """\
@@ -481,9 +522,10 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
         }
     }"""
     )
-    js = textwrap.dedent(
-        # pylint: disable=line-too-long
-        """\
+    pos = json.loads(
+        textwrap.dedent(
+            # pylint: disable=line-too-long
+            """\
         {
           "CHART-6GdlekVise": {
             "children": [],
@@ -753,8 +795,8 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
           }
         }
         """  # pylint: enable=line-too-long
+        )
     )
-    pos = json.loads(js)
     # dashboard v2 doesn't allow add markup slice
     dash.slices = [slc for slc in slices if slc.viz_type != "markup"]
     update_slice_ids(pos, dash.slices)
@@ -762,3 +804,4 @@ def load_birth_names(only_metadata: bool = False, force: bool = False) -> None:
     dash.position_json = json.dumps(pos, indent=4)
     dash.slug = "births"
     db.session.commit()
+    return dash

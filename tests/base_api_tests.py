@@ -16,7 +16,9 @@
 # under the License.
 # isort:skip_file
 import json
+from tests.fixtures.world_bank_dashboard import load_world_bank_dashboard_with_slices
 
+import pytest
 from flask_appbuilder.models.sqla.interface import SQLAInterface
 import prison
 
@@ -31,27 +33,48 @@ from .base_tests import SupersetTestCase
 
 class Model1Api(BaseSupersetModelRestApi):
     datamodel = SQLAInterface(Dashboard)
-    class_permission_name = "DashboardModelView"
+    allow_browser_login = True
+    class_permission_name = "Dashboard"
     method_permission_name = {
-        "get_list": "list",
-        "get": "show",
-        "export": "mulexport",
-        "post": "add",
-        "put": "edit",
-        "delete": "delete",
-        "bulk_delete": "delete",
-        "info": "list",
-        "related": "list",
+        "get_list": "read",
+        "get": "read",
+        "export": "read",
+        "post": "write",
+        "put": "write",
+        "delete": "write",
+        "bulk_delete": "write",
+        "info": "read",
+        "related": "read",
     }
 
 
 appbuilder.add_api(Model1Api)
 
 
-class BaseModelRestApiTests(SupersetTestCase):
+class TestOpenApiSpec(SupersetTestCase):
+    def test_open_api_spec(self):
+        """
+        API: Test validate OpenAPI spec
+        :return:
+        """
+        from openapi_spec_validator import validate_spec
+
+        self.login(username="admin")
+        uri = "api/v1/_openapi"
+        rv = self.client.get(uri)
+        self.assertEqual(rv.status_code, 200)
+        response = json.loads(rv.data.decode("utf-8"))
+        validate_spec(response)
+
+
+class TestBaseModelRestApi(SupersetTestCase):
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices")
     def test_default_missing_declaration_get(self):
         """
-            API: Test default missing declaration on get
+        API: Test default missing declaration on get
+
+        We want to make sure that not declared list_columns will
+        not render all columns by default but just the model's pk
         """
         # Check get list response
         self.login(username="admin")
@@ -73,6 +96,12 @@ class BaseModelRestApiTests(SupersetTestCase):
         self.assertEqual(list(response["result"].keys()), ["id"])
 
     def test_default_missing_declaration_put_spec(self):
+        """
+        API: Test default missing declaration on put openapi spec
+
+        We want to make sure that not declared edit_columns will
+        not render all columns by default but just the model's pk
+        """
         self.login(username="admin")
         uri = "api/v1/_openapi"
         rv = self.client.get(uri)
@@ -91,6 +120,12 @@ class BaseModelRestApiTests(SupersetTestCase):
         )
 
     def test_default_missing_declaration_post(self):
+        """
+        API: Test default missing declaration on post
+
+        We want to make sure that not declared add_columns will
+        not accept all columns by default
+        """
         dashboard_data = {
             "dashboard_title": "title1",
             "slug": "slug1",
@@ -102,30 +137,42 @@ class BaseModelRestApiTests(SupersetTestCase):
         self.login(username="admin")
         uri = "api/v1/model1api/"
         rv = self.client.post(uri, json=dashboard_data)
-        # dashboard model accepts all fields are null
-        self.assertEqual(rv.status_code, 201)
         response = json.loads(rv.data.decode("utf-8"))
-        self.assertEqual(list(response["result"].keys()), ["id"])
-        model = db.session.query(Dashboard).get(response["id"])
-        self.assertEqual(model.dashboard_title, None)
-        self.assertEqual(model.slug, None)
-        self.assertEqual(model.position_json, None)
-        self.assertEqual(model.json_metadata, None)
-        db.session.delete(model)
-        db.session.commit()
+        self.assertEqual(rv.status_code, 422)
+        expected_response = {
+            "message": {
+                "css": ["Unknown field."],
+                "dashboard_title": ["Unknown field."],
+                "json_metadata": ["Unknown field."],
+                "position_json": ["Unknown field."],
+                "published": ["Unknown field."],
+                "slug": ["Unknown field."],
+            }
+        }
+        self.assertEqual(response, expected_response)
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices")
     def test_default_missing_declaration_put(self):
+        """
+        API: Test default missing declaration on put
+
+        We want to make sure that not declared edit_columns will
+        not accept all columns by default
+        """
         dashboard = db.session.query(Dashboard).first()
         dashboard_data = {"dashboard_title": "CHANGED", "slug": "CHANGED"}
         self.login(username="admin")
         uri = f"api/v1/model1api/{dashboard.id}"
         rv = self.client.put(uri, json=dashboard_data)
-        # dashboard model accepts all fields are null
-        self.assertEqual(rv.status_code, 200)
         response = json.loads(rv.data.decode("utf-8"))
-        changed_dashboard = db.session.query(Dashboard).get(dashboard.id)
-        self.assertNotEqual(changed_dashboard.dashboard_title, "CHANGED")
-        self.assertNotEqual(changed_dashboard.slug, "CHANGED")
+        self.assertEqual(rv.status_code, 422)
+        expected_response = {
+            "message": {
+                "dashboard_title": ["Unknown field."],
+                "slug": ["Unknown field."],
+            }
+        }
+        self.assertEqual(response, expected_response)
 
 
 class ApiOwnersTestCaseMixin:
@@ -137,48 +184,86 @@ class ApiOwnersTestCaseMixin:
 
     def test_get_related_owners(self):
         """
-            API: Test get related owners
+        API: Test get related owners
         """
         self.login(username="admin")
         uri = f"api/v1/{self.resource_name}/related/owners"
         rv = self.client.get(uri)
-        self.assertEqual(rv.status_code, 200)
+        assert rv.status_code == 200
         response = json.loads(rv.data.decode("utf-8"))
         users = db.session.query(security_manager.user_model).all()
         expected_users = [str(user) for user in users]
-        self.assertEqual(response["count"], len(users))
+        assert response["count"] == len(users)
         # This needs to be implemented like this, because ordering varies between
         # postgres and mysql
         response_users = [result["text"] for result in response["result"]]
         for expected_user in expected_users:
-            self.assertIn(expected_user, response_users)
+            assert expected_user in response_users
 
     def test_get_filter_related_owners(self):
         """
-            API: Test get filter related owners
+        API: Test get filter related owners
         """
         self.login(username="admin")
-        argument = {"filter": "a"}
+        argument = {"filter": "gamma"}
         uri = f"api/v1/{self.resource_name}/related/owners?q={prison.dumps(argument)}"
 
         rv = self.client.get(uri)
-        self.assertEqual(rv.status_code, 200)
+        assert rv.status_code == 200
         response = json.loads(rv.data.decode("utf-8"))
-        expected_response = {
-            "count": 2,
-            "result": [
-                {"text": "admin user", "value": 1},
-                {"text": "alpha user", "value": 5},
-            ],
-        }
-        self.assertEqual(response, expected_response)
+        assert 3 == response["count"]
+        sorted_results = sorted(response["result"], key=lambda value: value["text"])
+        expected_results = [
+            {"text": "gamma user", "value": 2},
+            {"text": "gamma2 user", "value": 3},
+            {"text": "gamma_sqllab user", "value": 4},
+        ]
+        assert expected_results == sorted_results
+
+    def test_get_ids_related_owners(self):
+        """
+        API: Test get filter related owners
+        """
+        self.login(username="admin")
+        argument = {"filter": "gamma_sqllab", "include_ids": [2]}
+        uri = f"api/v1/{self.resource_name}/related/owners?q={prison.dumps(argument)}"
+
+        rv = self.client.get(uri)
+        response = json.loads(rv.data.decode("utf-8"))
+        assert rv.status_code == 200
+        assert 2 == response["count"]
+        sorted_results = sorted(response["result"], key=lambda value: value["text"])
+        expected_results = [
+            {"text": "gamma user", "value": 2},
+            {"text": "gamma_sqllab user", "value": 4},
+        ]
+        assert expected_results == sorted_results
+
+    def test_get_repeated_ids_related_owners(self):
+        """
+        API: Test get filter related owners
+        """
+        self.login(username="admin")
+        argument = {"filter": "gamma_sqllab", "include_ids": [2, 4]}
+        uri = f"api/v1/{self.resource_name}/related/owners?q={prison.dumps(argument)}"
+
+        rv = self.client.get(uri)
+        response = json.loads(rv.data.decode("utf-8"))
+        assert rv.status_code == 200
+        assert 2 == response["count"]
+        sorted_results = sorted(response["result"], key=lambda value: value["text"])
+        expected_results = [
+            {"text": "gamma user", "value": 2},
+            {"text": "gamma_sqllab user", "value": 4},
+        ]
+        assert expected_results == sorted_results
 
     def test_get_related_fail(self):
         """
-            API: Test get related fail
+        API: Test get related fail
         """
         self.login(username="admin")
         uri = f"api/v1/{self.resource_name}/related/owner"
 
         rv = self.client.get(uri)
-        self.assertEqual(rv.status_code, 404)
+        assert rv.status_code == 404

@@ -19,7 +19,12 @@
 import json
 import unittest
 from unittest import mock
+from tests.fixtures.birth_names_dashboard import load_birth_names_dashboard_with_slices
 
+import pytest
+from tests.fixtures.world_bank_dashboard import load_world_bank_dashboard_with_slices
+
+from tests.fixtures.energy_dashboard import load_energy_table_with_slice
 from tests.test_app import app  # isort:skip
 from superset import db, security_manager
 from superset.connectors.connector_registry import ConnectorRegistry
@@ -94,10 +99,12 @@ def create_access_request(session, ds_type, ds_name, role_name, user_name):
     return access_request
 
 
-class RequestAccessTests(SupersetTestCase):
+class TestRequestAccess(SupersetTestCase):
     @classmethod
     def setUpClass(cls):
         with app.app_context():
+            cls.create_druid_test_objects()
+
             security_manager.add_role("override_me")
             security_manager.add_role(TEST_ROLE_1)
             security_manager.add_role(TEST_ROLE_2)
@@ -137,6 +144,7 @@ class RequestAccessTests(SupersetTestCase):
         )
         self.assertNotEqual(405, response.status_code)
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_override_role_permissions_1_table(self):
         response = self.client.post(
             "/superset/override_role_permissions/",
@@ -155,6 +163,7 @@ class RequestAccessTests(SupersetTestCase):
             "datasource_access", updated_override_me.permissions[0].permission.name
         )
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_override_role_permissions_druid_and_table(self):
         response = self.client.post(
             "/superset/override_role_permissions/",
@@ -182,6 +191,9 @@ class RequestAccessTests(SupersetTestCase):
         )
         self.assertEqual(3, len(perms))
 
+    @pytest.mark.usefixtures(
+        "load_energy_table_with_slice", "load_birth_names_dashboard_with_slices"
+    )
     def test_override_role_permissions_drops_absent_perms(self):
         override_me = security_manager.find_role("override_me")
         override_me.permissions.append(
@@ -241,6 +253,7 @@ class RequestAccessTests(SupersetTestCase):
             gamma_user = security_manager.find_user(username="gamma")
             gamma_user.roles.remove(security_manager.find_role("test_role1"))
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_clean_requests_after_alpha_grant(self):
         session = db.session
 
@@ -270,6 +283,7 @@ class RequestAccessTests(SupersetTestCase):
         gamma_user.roles.remove(security_manager.find_role("Alpha"))
         session.commit()
 
+    @pytest.mark.usefixtures("load_energy_table_with_slice")
     def test_clean_requests_after_db_grant(self):
         session = db.session
 
@@ -308,6 +322,7 @@ class RequestAccessTests(SupersetTestCase):
         gamma_user.roles.remove(security_manager.find_role(DB_ACCESS_ROLE))
         session.commit()
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices")
     def test_clean_requests_after_schema_grant(self):
         session = db.session
 
@@ -357,7 +372,7 @@ class RequestAccessTests(SupersetTestCase):
 
         session.commit()
 
-    @mock.patch("superset.utils.core.send_MIME_email")
+    @mock.patch("superset.utils.core.send_mime_email")
     def test_approve(self, mock_send_mime):
         if app.config["ENABLE_ACCESS_REQUEST"]:
             session = db.session
@@ -385,7 +400,7 @@ class RequestAccessTests(SupersetTestCase):
             )
             self.assertEqual(
                 "[Superset] Access to the datasource {} was granted".format(
-                    self.get_table(ds_1_id).full_name
+                    self.get_table_by_id(ds_1_id).full_name
                 ),
                 call_args[2]["Subject"],
             )
@@ -426,7 +441,7 @@ class RequestAccessTests(SupersetTestCase):
             )
             self.assertEqual(
                 "[Superset] Access to the datasource {} was granted".format(
-                    self.get_table(ds_2_id).full_name
+                    self.get_table_by_id(ds_2_id).full_name
                 ),
                 call_args[2]["Subject"],
             )

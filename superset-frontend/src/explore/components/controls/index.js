@@ -24,7 +24,7 @@ import ColorMapControl from './ColorMapControl';
 import ColorPickerControl from './ColorPickerControl';
 import ColorSchemeControl from './ColorSchemeControl';
 import DatasourceControl from './DatasourceControl';
-import DateFilterControl from './DateFilterControl';
+import DateFilterControl from './DateFilterControl/DateFilterControl';
 import FixedOrMetricControl from './FixedOrMetricControl';
 import HiddenControl from './HiddenControl';
 import SelectAsyncControl from './SelectAsyncControl';
@@ -36,10 +36,9 @@ import TextControl from './TextControl';
 import TimeSeriesColumnControl from './TimeSeriesColumnControl';
 import ViewportControl from './ViewportControl';
 import VizTypeControl from './VizTypeControl';
-import MetricsControl from './MetricsControl';
-import AdhocFilterControl from './AdhocFilterControl';
+import MetricsControl from './MetricControl/MetricsControl';
+import AdhocFilterControl from './FilterControl/AdhocFilterControl';
 import FilterBoxItemControl from './FilterBoxItemControl';
-import withVerification from './withVerification';
 
 const controlMap = {
   AnnotationLayerControl,
@@ -65,20 +64,5 @@ const controlMap = {
   MetricsControl,
   AdhocFilterControl,
   FilterBoxItemControl,
-  MetricsControlVerifiedOptions: withVerification(
-    MetricsControl,
-    'metric_name',
-    'savedMetrics',
-  ),
-  SelectControlVerifiedOptions: withVerification(
-    SelectControl,
-    'column_name',
-    'options',
-  ),
-  AdhocFilterControlVerifiedOptions: withVerification(
-    AdhocFilterControl,
-    'column_name',
-    'columns',
-  ),
 };
 export default controlMap;

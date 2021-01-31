@@ -19,8 +19,13 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, patch, PropertyMock
 
 from flask_babel import gettext as __
+import pytest
 from selenium.common.exceptions import WebDriverException
+from slack import errors, WebClient
 
+from tests.fixtures.world_bank_dashboard import (
+    load_world_bank_dashboard_with_slices_module_scope,
+)
 from tests.test_app import app
 from superset import db
 from superset.models.dashboard import Dashboard
@@ -38,11 +43,13 @@ from superset.tasks.schedules import (
 )
 from superset.models.slice import Slice
 from tests.base_tests import SupersetTestCase
+from tests.utils import read_fixture
+from tests.fixtures.birth_names_dashboard import (
+    load_birth_names_dashboard_with_slices_module_scope,
+)
 
-from .utils import read_fixture
 
-
-class SchedulesTestCase(SupersetTestCase):
+class TestSchedules(SupersetTestCase):
 
     RECIPIENTS = "recipient1@superset.com, recipient2@superset.com"
     BCC = "bcc@superset.com"
@@ -58,10 +65,13 @@ class SchedulesTestCase(SupersetTestCase):
                 deliver_as_group=True,
                 delivery_type=EmailDeliveryType.inline,
             )
-
-            # Pick up a random slice and dashboard
-            slce = db.session.query(Slice).all()[0]
-            dashboard = db.session.query(Dashboard).all()[0]
+            # Pick up a sample slice and dashboard
+            slce = db.session.query(Slice).filter_by(slice_name="Participants").one()
+            dashboard = (
+                db.session.query(Dashboard)
+                .filter_by(dashboard_title="World Bank's Data")
+                .one()
+            )
 
             dashboard_schedule = DashboardEmailSchedule(**cls.common_data)
             dashboard_schedule.dashboard_id = dashboard.id
@@ -72,6 +82,7 @@ class SchedulesTestCase(SupersetTestCase):
             slice_schedule.slice_id = slce.id
             slice_schedule.user_id = 1
             slice_schedule.email_format = SliceEmailReportFormat.data
+            slice_schedule.slack_channel = "#test_channel"
 
             db.session.add(slice_schedule)
             db.session.commit()
@@ -90,6 +101,7 @@ class SchedulesTestCase(SupersetTestCase):
             ).delete()
             db.session.commit()
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices_module_scope")
     def test_crontab_scheduler(self):
         crontab = "* * * * *"
 
@@ -117,6 +129,7 @@ class SchedulesTestCase(SupersetTestCase):
         self.assertEqual(schedules[-1], stop_at - timedelta(seconds=12 * 60))
         self.assertEqual(len(schedules), 5)
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices_module_scope")
     def test_wider_schedules(self):
         crontab = "*/15 2,10 * * *"
 
@@ -132,6 +145,10 @@ class SchedulesTestCase(SupersetTestCase):
             else:
                 self.assertEqual(len(schedules), 0)
 
+    @pytest.mark.usefixtures(
+        "load_world_bank_dashboard_with_slices_module_scope",
+        "load_birth_names_dashboard_with_slices_module_scope",
+    )
     def test_complex_schedule(self):
         # Run the job on every Friday of March and May
         # On these days, run the job at
@@ -159,16 +176,17 @@ class SchedulesTestCase(SupersetTestCase):
         self.assertEqual(schedules[59], datetime.strptime("2018-03-30 17:40:00", fmt))
         self.assertEqual(schedules[60], datetime.strptime("2018-05-04 17:10:00", fmt))
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices_module_scope")
     @patch("superset.tasks.schedules.firefox.webdriver.WebDriver")
     def test_create_driver(self, mock_driver_class):
         mock_driver = Mock()
         mock_driver_class.return_value = mock_driver
         mock_driver.find_elements_by_id.side_effect = [True, False]
 
-        create_webdriver()
-        create_webdriver()
+        create_webdriver(db.session)
         mock_driver.add_cookie.assert_called_once()
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices_module_scope")
     @patch("superset.tasks.schedules.firefox.webdriver.WebDriver")
     @patch("superset.tasks.schedules.send_email_smtp")
     @patch("superset.tasks.schedules.time")
@@ -187,14 +205,22 @@ class SchedulesTestCase(SupersetTestCase):
         schedule = (
             db.session.query(DashboardEmailSchedule)
             .filter_by(id=self.dashboard_schedule)
-            .all()[0]
+            .one()
         )
 
-        deliver_dashboard(schedule)
+        deliver_dashboard(
+            schedule.dashboard_id,
+            schedule.recipients,
+            schedule.slack_channel,
+            schedule.delivery_type,
+            schedule.deliver_as_group,
+        )
+
         mtime.sleep.assert_called_once()
         driver.screenshot.assert_not_called()
         send_email_smtp.assert_called_once()
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices_module_scope")
     @patch("superset.tasks.schedules.firefox.webdriver.WebDriver")
     @patch("superset.tasks.schedules.send_email_smtp")
     @patch("superset.tasks.schedules.time")
@@ -216,21 +242,29 @@ class SchedulesTestCase(SupersetTestCase):
         schedule = (
             db.session.query(DashboardEmailSchedule)
             .filter_by(id=self.dashboard_schedule)
-            .all()[0]
+            .one()
         )
 
         schedule.delivery_type = EmailDeliveryType.attachment
-        deliver_dashboard(schedule)
+
+        deliver_dashboard(
+            schedule.dashboard_id,
+            schedule.recipients,
+            schedule.slack_channel,
+            schedule.delivery_type,
+            schedule.deliver_as_group,
+        )
 
         mtime.sleep.assert_called_once()
         driver.screenshot.assert_not_called()
         send_email_smtp.assert_called_once()
         self.assertIsNone(send_email_smtp.call_args[1]["images"])
         self.assertEqual(
-            send_email_smtp.call_args[1]["data"]["screenshot.png"],
+            send_email_smtp.call_args[1]["data"]["screenshot"],
             element.screenshot_as_png,
         )
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices_module_scope")
     @patch("superset.tasks.schedules.firefox.webdriver.WebDriver")
     @patch("superset.tasks.schedules.send_email_smtp")
     @patch("superset.tasks.schedules.time")
@@ -253,10 +287,17 @@ class SchedulesTestCase(SupersetTestCase):
         schedule = (
             db.session.query(DashboardEmailSchedule)
             .filter_by(id=self.dashboard_schedule)
-            .all()[0]
+            .one()
         )
 
-        deliver_dashboard(schedule)
+        deliver_dashboard(
+            schedule.dashboard_id,
+            schedule.recipients,
+            schedule.slack_channel,
+            schedule.delivery_type,
+            schedule.deliver_as_group,
+        )
+
         mtime.sleep.assert_called_once()
         driver.screenshot.assert_called_once()
         send_email_smtp.assert_called_once()
@@ -267,6 +308,7 @@ class SchedulesTestCase(SupersetTestCase):
             driver.screenshot.return_value,
         )
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices_module_scope")
     @patch("superset.tasks.schedules.firefox.webdriver.WebDriver")
     @patch("superset.tasks.schedules.send_email_smtp")
     @patch("superset.tasks.schedules.time")
@@ -285,7 +327,7 @@ class SchedulesTestCase(SupersetTestCase):
         schedule = (
             db.session.query(DashboardEmailSchedule)
             .filter_by(id=self.dashboard_schedule)
-            .all()[0]
+            .one()
         )
 
         # Send individual mails to the group
@@ -294,17 +336,28 @@ class SchedulesTestCase(SupersetTestCase):
         # Set a bcc email address
         app.config["EMAIL_REPORT_BCC_ADDRESS"] = self.BCC
 
-        deliver_dashboard(schedule)
+        deliver_dashboard(
+            schedule.dashboard_id,
+            schedule.recipients,
+            schedule.slack_channel,
+            schedule.delivery_type,
+            schedule.deliver_as_group,
+        )
+
         mtime.sleep.assert_called_once()
         driver.screenshot.assert_not_called()
 
         self.assertEqual(send_email_smtp.call_count, 2)
         self.assertEqual(send_email_smtp.call_args[1]["bcc"], self.BCC)
 
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices_module_scope")
+    @patch("superset.tasks.slack_util.WebClient.files_upload")
     @patch("superset.tasks.schedules.firefox.webdriver.WebDriver")
     @patch("superset.tasks.schedules.send_email_smtp")
     @patch("superset.tasks.schedules.time")
-    def test_deliver_slice_inline_image(self, mtime, send_email_smtp, driver_class):
+    def test_deliver_slice_inline_image(
+        self, mtime, send_email_smtp, driver_class, files_upload
+    ):
         element = Mock()
         driver = Mock()
         mtime.sleep.return_value = None
@@ -317,15 +370,21 @@ class SchedulesTestCase(SupersetTestCase):
         element.screenshot_as_png = read_fixture("sample.png")
 
         schedule = (
-            db.session.query(SliceEmailSchedule)
-            .filter_by(id=self.slice_schedule)
-            .all()[0]
+            db.session.query(SliceEmailSchedule).filter_by(id=self.slice_schedule).one()
         )
 
         schedule.email_format = SliceEmailReportFormat.visualization
         schedule.delivery_format = EmailDeliveryType.inline
 
-        deliver_slice(schedule)
+        deliver_slice(
+            schedule.slice_id,
+            schedule.recipients,
+            schedule.slack_channel,
+            schedule.delivery_type,
+            schedule.email_format,
+            schedule.deliver_as_group,
+            db.session,
+        )
         mtime.sleep.assert_called_once()
         driver.screenshot.assert_not_called()
         send_email_smtp.assert_called_once()
@@ -335,10 +394,24 @@ class SchedulesTestCase(SupersetTestCase):
             element.screenshot_as_png,
         )
 
+        self.assertEqual(
+            files_upload.call_args[1],
+            {
+                "channels": "#test_channel",
+                "file": element.screenshot_as_png,
+                "initial_comment": f"\n        *Participants*\n\n        <http://0.0.0.0:8080/superset/slice/{schedule.slice_id}/|Explore in Superset>\n        ",
+                "title": "[Report]  Participants",
+            },
+        )
+
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices_module_scope")
+    @patch("superset.tasks.slack_util.WebClient.files_upload")
     @patch("superset.tasks.schedules.firefox.webdriver.WebDriver")
     @patch("superset.tasks.schedules.send_email_smtp")
     @patch("superset.tasks.schedules.time")
-    def test_deliver_slice_attachment(self, mtime, send_email_smtp, driver_class):
+    def test_deliver_slice_attachment(
+        self, mtime, send_email_smtp, driver_class, files_upload
+    ):
         element = Mock()
         driver = Mock()
         mtime.sleep.return_value = None
@@ -351,29 +424,48 @@ class SchedulesTestCase(SupersetTestCase):
         element.screenshot_as_png = read_fixture("sample.png")
 
         schedule = (
-            db.session.query(SliceEmailSchedule)
-            .filter_by(id=self.slice_schedule)
-            .all()[0]
+            db.session.query(SliceEmailSchedule).filter_by(id=self.slice_schedule).one()
         )
 
         schedule.email_format = SliceEmailReportFormat.visualization
         schedule.delivery_type = EmailDeliveryType.attachment
 
-        deliver_slice(schedule)
+        deliver_slice(
+            schedule.slice_id,
+            schedule.recipients,
+            schedule.slack_channel,
+            schedule.delivery_type,
+            schedule.email_format,
+            schedule.deliver_as_group,
+            db.session,
+        )
+
         mtime.sleep.assert_called_once()
         driver.screenshot.assert_not_called()
         send_email_smtp.assert_called_once()
 
         self.assertEqual(
-            send_email_smtp.call_args[1]["data"]["screenshot.png"],
+            send_email_smtp.call_args[1]["data"]["screenshot"],
             element.screenshot_as_png,
         )
 
+        self.assertEqual(
+            files_upload.call_args[1],
+            {
+                "channels": "#test_channel",
+                "file": element.screenshot_as_png,
+                "initial_comment": f"\n        *Participants*\n\n        <http://0.0.0.0:8080/superset/slice/{schedule.slice_id}/|Explore in Superset>\n        ",
+                "title": "[Report]  Participants",
+            },
+        )
+
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices_module_scope")
+    @patch("superset.tasks.slack_util.WebClient.files_upload")
     @patch("superset.tasks.schedules.urllib.request.OpenerDirector.open")
     @patch("superset.tasks.schedules.urllib.request.urlopen")
     @patch("superset.tasks.schedules.send_email_smtp")
     def test_deliver_slice_csv_attachment(
-        self, send_email_smtp, mock_open, mock_urlopen
+        self, send_email_smtp, mock_open, mock_urlopen, files_upload
     ):
         response = Mock()
         mock_open.return_value = response
@@ -382,41 +474,87 @@ class SchedulesTestCase(SupersetTestCase):
         response.read.return_value = self.CSV
 
         schedule = (
-            db.session.query(SliceEmailSchedule)
-            .filter_by(id=self.slice_schedule)
-            .all()[0]
+            db.session.query(SliceEmailSchedule).filter_by(id=self.slice_schedule).one()
         )
 
         schedule.email_format = SliceEmailReportFormat.data
         schedule.delivery_type = EmailDeliveryType.attachment
 
-        deliver_slice(schedule)
+        deliver_slice(
+            schedule.slice_id,
+            schedule.recipients,
+            schedule.slack_channel,
+            schedule.delivery_type,
+            schedule.email_format,
+            schedule.deliver_as_group,
+            db.session,
+        )
+
         send_email_smtp.assert_called_once()
 
         file_name = __("%(name)s.csv", name=schedule.slice.slice_name)
 
         self.assertEqual(send_email_smtp.call_args[1]["data"][file_name], self.CSV)
 
+        self.assertEqual(
+            files_upload.call_args[1],
+            {
+                "channels": "#test_channel",
+                "file": self.CSV,
+                "initial_comment": f"\n        *Participants*\n\n        <http://0.0.0.0:8080/superset/slice/{schedule.slice_id}/|Explore in Superset>\n        ",
+                "title": "[Report]  Participants",
+            },
+        )
+
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices_module_scope")
+    @patch("superset.tasks.slack_util.WebClient.files_upload")
     @patch("superset.tasks.schedules.urllib.request.urlopen")
     @patch("superset.tasks.schedules.urllib.request.OpenerDirector.open")
     @patch("superset.tasks.schedules.send_email_smtp")
-    def test_deliver_slice_csv_inline(self, send_email_smtp, mock_open, mock_urlopen):
+    def test_deliver_slice_csv_inline(
+        self, send_email_smtp, mock_open, mock_urlopen, files_upload
+    ):
         response = Mock()
         mock_open.return_value = response
         mock_urlopen.return_value = response
         mock_urlopen.return_value.getcode.return_value = 200
         response.read.return_value = self.CSV
         schedule = (
-            db.session.query(SliceEmailSchedule)
-            .filter_by(id=self.slice_schedule)
-            .all()[0]
+            db.session.query(SliceEmailSchedule).filter_by(id=self.slice_schedule).one()
         )
 
         schedule.email_format = SliceEmailReportFormat.data
         schedule.delivery_type = EmailDeliveryType.inline
 
-        deliver_slice(schedule)
+        deliver_slice(
+            schedule.slice_id,
+            schedule.recipients,
+            schedule.slack_channel,
+            schedule.delivery_type,
+            schedule.email_format,
+            schedule.deliver_as_group,
+            db.session,
+        )
+
         send_email_smtp.assert_called_once()
 
         self.assertIsNone(send_email_smtp.call_args[1]["data"])
         self.assertTrue("<table " in send_email_smtp.call_args[0][2])
+
+        self.assertEqual(
+            files_upload.call_args[1],
+            {
+                "channels": "#test_channel",
+                "file": self.CSV,
+                "initial_comment": f"\n        *Participants*\n\n        <http://0.0.0.0:8080/superset/slice/{schedule.slice_id}/|Explore in Superset>\n        ",
+                "title": "[Report]  Participants",
+            },
+        )
+
+
+def test_slack_client_compatibility():
+    c2 = WebClient()
+    # slackclient >2.5.0 raises TypeError: a bytes-like object is required, not 'str
+    # and requires to path a filepath instead of the bytes directly
+    with pytest.raises(errors.SlackApiError):
+        c2.files_upload(channels="#bogdan-test2", file=b"blabla", title="Test upload")

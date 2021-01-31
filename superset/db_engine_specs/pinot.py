@@ -24,6 +24,7 @@ from superset.db_engine_specs.base import BaseEngineSpec, TimestampExpression
 
 class PinotEngineSpec(BaseEngineSpec):  # pylint: disable=abstract-method
     engine = "pinot"
+    engine_name = "Apache Pinot"
     allows_subqueries = False
     allows_joins = False
     allows_column_aliases = False
@@ -34,10 +35,10 @@ class PinotEngineSpec(BaseEngineSpec):  # pylint: disable=abstract-method
         "PT1M": "1:MINUTES",
         "PT1H": "1:HOURS",
         "P1D": "1:DAYS",
-        "P1W": "1:WEEKS",
-        "P1M": "1:MONTHS",
-        "P0.25Y": "3:MONTHS",
-        "P1Y": "1:YEARS",
+        "P1W": "week",
+        "P1M": "month",
+        "P0.25Y": "quarter",
+        "P1Y": "year",
     }
 
     _python_to_java_time_patterns: Dict[str, str] = {
@@ -47,6 +48,17 @@ class PinotEngineSpec(BaseEngineSpec):  # pylint: disable=abstract-method
         "%H": "HH",
         "%M": "mm",
         "%S": "ss",
+    }
+
+    _use_date_trunc_function: Dict[str, bool] = {
+        "PT1S": False,
+        "PT1M": False,
+        "PT1H": False,
+        "P1D": False,
+        "P1W": True,
+        "P1M": True,
+        "P0.25Y": True,
+        "P1Y": True,
     }
 
     @classmethod
@@ -79,24 +91,23 @@ class PinotEngineSpec(BaseEngineSpec):  # pylint: disable=abstract-method
         else:
             seconds_or_ms = "MILLISECONDS" if pdf == "epoch_ms" else "SECONDS"
             tf = f"1:{seconds_or_ms}:EPOCH"
-        granularity = cls.get_time_grain_expressions().get(time_grain)
-        if not granularity:
-            raise NotImplementedError("No pinot grain spec for " + str(time_grain))
+        if time_grain:
+            granularity = cls.get_time_grain_expressions().get(time_grain)
+            if not granularity:
+                raise NotImplementedError("No pinot grain spec for " + str(time_grain))
+        else:
+            return TimestampExpression("{{col}}", col)
+
         # In pinot the output is a string since there is no timestamp column like pg
-        time_expr = f'DATETIMECONVERT({{col}}, "{tf}", "{tf}", "{granularity}")'
+        if cls._use_date_trunc_function.get(time_grain):
+            time_expr = f"DATETRUNC('{granularity}', {{col}}, '{seconds_or_ms}')"
+        else:
+            time_expr = f"DATETIMECONVERT({{col}}, '{tf}', '{tf}', '{granularity}')"
+
         return TimestampExpression(time_expr, col)
 
     @classmethod
     def make_select_compatible(
         cls, groupby_exprs: Dict[str, ColumnElement], select_exprs: List[ColumnElement]
     ) -> List[ColumnElement]:
-        # Pinot does not want the group by expr's to appear in the select clause
-        select_sans_groupby = []
-        # We want identity and not equality, so doing the filtering manually
-        for sel in select_exprs:
-            for gr in groupby_exprs:
-                if sel is gr:
-                    break
-            else:
-                select_sans_groupby.append(sel)
-        return select_sans_groupby
+        return select_exprs

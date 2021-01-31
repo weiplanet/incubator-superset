@@ -15,14 +15,18 @@
 # specific language governing permissions and limitations
 # under the License.
 import logging
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from superset.charts.filters import ChartFilter
 from superset.dao.base import BaseDAO
 from superset.extensions import db
+from superset.models.core import FavStar, FavStarClassName
 from superset.models.slice import Slice
+
+if TYPE_CHECKING:
+    from superset.connectors.base.models import BaseDatasource
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +51,33 @@ class ChartDAO(BaseDAO):
             )
             if commit:
                 db.session.commit()
-        except SQLAlchemyError as e:
+        except SQLAlchemyError as ex:
             if commit:
                 db.session.rollback()
-            raise e
+            raise ex
+
+    @staticmethod
+    def save(slc: Slice, commit: bool = True) -> None:
+        db.session.add(slc)
+        if commit:
+            db.session.commit()
+
+    @staticmethod
+    def overwrite(slc: Slice, commit: bool = True) -> None:
+        db.session.merge(slc)
+        if commit:
+            db.session.commit()
+
+    @staticmethod
+    def favorited_ids(charts: List[Slice], current_user_id: int) -> List[FavStar]:
+        ids = [chart.id for chart in charts]
+        return [
+            star.obj_id
+            for star in db.session.query(FavStar.obj_id)
+            .filter(
+                FavStar.class_name == FavStarClassName.CHART,
+                FavStar.obj_id.in_(ids),
+                FavStar.user_id == current_user_id,
+            )
+            .all()
+        ]
